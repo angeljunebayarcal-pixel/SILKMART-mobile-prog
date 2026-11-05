@@ -1,3 +1,4 @@
+
 import React, {
   useEffect,
   useMemo,
@@ -26,8 +27,8 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  runTransaction,
   serverTimestamp,
-  updateDoc,
 } from "firebase/firestore";
 
 import { auth, db } from "../../firebase/config";
@@ -41,10 +42,7 @@ import {
   Stat,
 } from "../../components/AdminUI";
 
-import type {
-  DemoOrder,
-  OrderStatus,
-} from "../../lib/customerOrders";
+import type { DemoOrder } from "../../lib/customerOrders";
 
 import {
   formatOrderChatTime,
@@ -54,10 +52,8 @@ import {
   type OrderChatMessage,
 } from "../../lib/orderChat";
 
-import type { ScrollViewInstance } from "react-native";
-
 // =====================================
-// TYPES
+// TYPES AND CONSTANTS
 // =====================================
 
 type StaffOrder = DemoOrder;
@@ -68,12 +64,22 @@ type OrderFilter =
   | "Confirmed"
   | "Rejected";
 
+type OrderDecision = "Confirmed" | "Rejected";
+
 type CustomerProfile = {
   fullName: string;
   email: string;
   phoneNumber: string;
   address: string;
 };
+
+type MessageDeleteTarget = {
+  orderId: string;
+  messageId: string;
+};
+
+type IconName =
+  React.ComponentProps<typeof Ionicons>["name"];
 
 const FILTERS: OrderFilter[] = [
   "All",
@@ -87,12 +93,15 @@ const DARK = C.dark;
 const MUTED = "#627C6E";
 const SURFACE = "#FFFDF8";
 const LINE = C.line;
+const RED = "#A43F3F";
+const SOFT = "#EAF2E8";
 
-const money = (amount: number) =>
-  `₱${Number(amount || 0).toLocaleString("en-PH", {
+function money(amount: number): string {
+  return `₱${Number(amount || 0).toLocaleString("en-PH", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
 
 function friendlyDate(value?: string): string {
   if (!value) return "Not set";
@@ -128,8 +137,14 @@ function friendlyDate(value?: string): string {
   return value;
 }
 
+function errorMessage(reason: unknown): string {
+  return reason instanceof Error
+    ? reason.message
+    : "Something went wrong. Please try again.";
+}
+
 // =====================================
-// PRODUCT PHOTO
+// PRODUCT IMAGE
 // =====================================
 
 function ProductPhoto({
@@ -174,7 +189,7 @@ function ProductPhoto({
 }
 
 // =====================================
-// DETAIL COMPONENT
+// INFORMATION ROW
 // =====================================
 
 function DetailRow({
@@ -182,7 +197,7 @@ function DetailRow({
   label,
   value,
 }: {
-  icon: React.ComponentProps<typeof Ionicons>["name"];
+  icon: IconName;
   label: string;
   value: string;
 }) {
@@ -210,26 +225,37 @@ function DetailRow({
 }
 
 // =====================================
-// MAIN SCREEN
+// MAIN CUSTOMER ORDERS SCREEN
 // =====================================
 
 export default function CustomerOrders() {
-  const [orders, setOrders] = useState<StaffOrder[]>([]);
+  // ORDERS
 
+  const [orders, setOrders] = useState<StaffOrder[]>([]);
   const [productImages, setProductImages] = useState<
     Record<string, string>
   >({});
 
   const [queryText, setQueryText] = useState("");
-
-  const [filter, setFilter] =
-    useState<OrderFilter>("All");
-
+  const [filter, setFilter] = useState<OrderFilter>("All");
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
 
-  // Selected order and customer information.
+  // ORDER DECISION
+
+  const [
+    decisionConfirmation,
+    setDecisionConfirmation,
+  ] = useState<{
+    orderId: string;
+    status: OrderDecision;
+  } | null>(null);
+
+  const [decisionError, setDecisionError] = useState("");
+
+  // CUSTOMER DETAILS
+
   const [selectedOrderId, setSelectedOrderId] =
     useState<string | null>(null);
 
@@ -239,10 +265,10 @@ export default function CustomerOrders() {
   const [customerLoading, setCustomerLoading] =
     useState(false);
 
-  const [customerError, setCustomerError] =
-    useState("");
+  const [customerError, setCustomerError] = useState("");
 
-  // Chat state.
+  // CHAT
+
   const [chatOpen, setChatOpen] = useState(false);
 
   const [chatMessages, setChatMessages] =
@@ -253,15 +279,29 @@ export default function CustomerOrders() {
   const [chatSaving, setChatSaving] = useState(false);
   const [chatError, setChatError] = useState("");
 
-   const chatScrollRef = useRef<ScrollViewInstance | null>(null);
+  const chatScrollRef = useRef<
+    React.ElementRef<typeof ScrollView> | null
+  >(null);
+
+  // DELETE CHAT MESSAGE
+
+  const [messageToDelete, setMessageToDelete] =
+    useState<MessageDeleteTarget | null>(null);
+
+  const [deletingMessage, setDeletingMessage] =
+    useState(false);
+
+  const [deleteMessageError, setDeleteMessageError] =
+    useState("");
 
   // =====================================
-  // READ CUSTOMER ORDERS
+  // REAL-TIME ORDERS
   // =====================================
 
   useEffect(() => {
     const unsubscribe = onSnapshot(
       collection(db, "orders"),
+
       snapshot => {
         const records = snapshot.docs.map(entry => {
           const data = entry.data();
@@ -285,24 +325,25 @@ export default function CustomerOrders() {
         setLoading(false);
         setError("");
       },
+
       reason => {
         setLoading(false);
-        setError(reason.message);
+        setError(errorMessage(reason));
       }
     );
 
     return unsubscribe;
   }, []);
 
-  // Always use the latest Firestore order data.
-  const selectedOrder = useMemo(() => {
-    return orders.find(
-      order => order.id === selectedOrderId
-    ) ?? null;
-  }, [orders, selectedOrderId]);
+  const selectedOrder = useMemo(
+    () =>
+      orders.find(order => order.id === selectedOrderId) ??
+      null,
+    [orders, selectedOrderId]
+  );
 
   // =====================================
-  // IDENTIFY PRODUCTS IN ORDERS
+  // PRODUCT IMAGE IDS
   // =====================================
 
   const productIdsKey = useMemo(() => {
@@ -318,7 +359,7 @@ export default function CustomerOrders() {
   }, [orders]);
 
   // =====================================
-  // GET PRODUCT PHOTOS
+  // PRODUCT IMAGES
   // =====================================
 
   useEffect(() => {
@@ -340,8 +381,7 @@ export default function CustomerOrders() {
 
             if (!snapshot.exists()) return;
 
-            const imageUrl =
-              snapshot.data().imageUrl;
+            const imageUrl = snapshot.data().imageUrl;
 
             if (
               typeof imageUrl === "string" &&
@@ -350,7 +390,7 @@ export default function CustomerOrders() {
               images[productId] = imageUrl;
             }
           } catch {
-            // Saved image or fallback icon will appear.
+            // Keep the saved image or fallback icon.
           }
         })
       );
@@ -368,7 +408,7 @@ export default function CustomerOrders() {
   }, [productIdsKey]);
 
   // =====================================
-  // LOAD SELECTED CUSTOMER PROFILE
+  // CUSTOMER INFORMATION
   // =====================================
 
   useEffect(() => {
@@ -380,7 +420,6 @@ export default function CustomerOrders() {
     }
 
     let active = true;
-
     const customerUid = selectedOrder.customerUid;
 
     setCustomer(null);
@@ -396,9 +435,7 @@ export default function CustomerOrders() {
         if (!active) return;
 
         if (!snapshot.exists()) {
-          setCustomerError(
-            "Customer profile was not found."
-          );
+          setCustomerError("Customer profile was not found.");
           return;
         }
 
@@ -407,19 +444,13 @@ export default function CustomerOrders() {
         setCustomer({
           fullName: String(data.fullName ?? ""),
           email: String(data.email ?? ""),
-          phoneNumber: String(
-            data.phoneNumber ?? ""
-          ),
+          phoneNumber: String(data.phoneNumber ?? ""),
           address: String(data.address ?? ""),
         });
       } catch (reason) {
-        if (!active) return;
-
-        setCustomerError(
-          reason instanceof Error
-            ? reason.message
-            : "Unable to load customer information."
-        );
+        if (active) {
+          setCustomerError(errorMessage(reason));
+        }
       } finally {
         if (active) {
           setCustomerLoading(false);
@@ -446,18 +477,13 @@ export default function CustomerOrders() {
 
     return orders.filter(order => {
       const matchesFilter =
-        filter === "All" ||
-        order.status === filter;
+        filter === "All" || order.status === filter;
 
       const searchable = [
         order.id,
         order.customerUid,
-        ...(order.items ?? []).map(
-          item => item.name
-        ),
-        ...(order.items ?? []).map(
-          item => item.color
-        ),
+        ...(order.items ?? []).map(item => item.name),
+        ...(order.items ?? []).map(item => item.color),
       ]
         .join(" ")
         .toLowerCase();
@@ -470,42 +496,79 @@ export default function CustomerOrders() {
   }, [orders, queryText, filter]);
 
   // =====================================
-  // CONFIRM OR REJECT ORDER
+  // CONFIRM / REJECT ORDER
   // =====================================
 
-  async function updateStatus(
+  function requestDecision(
     order: StaffOrder,
-    status: OrderStatus
+    status: OrderDecision
   ) {
-    if (busy || order.status !== "Pending") {
+    if (busy || order.status !== "Pending") return;
+
+    setDecisionError("");
+
+    setDecisionConfirmation({
+      orderId: order.id,
+      status,
+    });
+  }
+
+  async function updateStatus(
+    orderId: string,
+    status: OrderDecision
+  ) {
+    if (
+      busy ||
+      !decisionConfirmation ||
+      decisionConfirmation.orderId !== orderId ||
+      decisionConfirmation.status !== status
+    ) {
       return;
     }
 
-    setBusy(order.id);
+    setBusy(orderId);
+    setDecisionError("");
     setError("");
 
     try {
-      await updateDoc(
-        doc(db, "orders", order.id),
-        {
+      await runTransaction(db, async transaction => {
+        const orderRef = doc(db, "orders", orderId);
+        const snapshot = await transaction.get(orderRef);
+
+        if (!snapshot.exists()) {
+          throw new Error("This order no longer exists.");
+        }
+
+        const data = snapshot.data();
+
+        if (
+          data.status !== "Pending" ||
+          data.deliveryStatus !== "Pending"
+        ) {
+          throw new Error(
+            "This order is no longer pending. Refresh its status."
+          );
+        }
+
+        transaction.update(orderRef, {
           status,
           updatedAt: serverTimestamp(),
           decisionAt: serverTimestamp(),
-        }
-      );
+        });
+      });
+
+      setDecisionConfirmation(null);
     } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Unable to update order."
-      );
+      const message = errorMessage(reason);
+      setDecisionError(message);
+      setError(message);
     } finally {
       setBusy("");
     }
   }
 
   // =====================================
-  // OPEN AND CLOSE ORDER DETAILS
+  // ORDER DETAILS
   // =====================================
 
   function openOrderDetails(order: StaffOrder) {
@@ -515,7 +578,7 @@ export default function CustomerOrders() {
   }
 
   function closeOrderDetails() {
-    if (chatSaving) return;
+    if (chatSaving || deletingMessage) return;
 
     setChatOpen(false);
     setSelectedOrderId(null);
@@ -545,17 +608,19 @@ export default function CustomerOrders() {
 
     const unsubscribe = subscribeToOrderChat(
       selectedOrderId,
+
       messages => {
         if (!active) return;
 
         setChatMessages(messages);
         setChatLoading(false);
       },
+
       reason => {
         if (!active) return;
 
         setChatLoading(false);
-        setChatError(reason.message);
+        setChatError(errorMessage(reason));
       }
     );
 
@@ -566,7 +631,7 @@ export default function CustomerOrders() {
   }, [chatOpen, selectedOrderId]);
 
   // =====================================
-  // OPEN AND CLOSE CHAT
+  // OPEN / CLOSE CHAT
   // =====================================
 
   function openChat() {
@@ -578,7 +643,7 @@ export default function CustomerOrders() {
   }
 
   function closeChat() {
-    if (chatSaving) return;
+    if (chatSaving || deletingMessage) return;
 
     setChatOpen(false);
     setChatInput("");
@@ -586,7 +651,7 @@ export default function CustomerOrders() {
   }
 
   // =====================================
-  // SEND MESSAGE
+  // SEND CHAT MESSAGE
   // =====================================
 
   async function sendMessage() {
@@ -605,25 +670,96 @@ export default function CustomerOrders() {
     setChatError("");
 
     try {
-      await sendOrderChatMessage(
-        orderId,
-        text
-      );
-
+      await sendOrderChatMessage(orderId, text);
       setChatInput("");
     } catch (reason) {
-      setChatError(
-        reason instanceof Error
-          ? reason.message
-          : "Unable to send message."
-      );
+      setChatError(errorMessage(reason));
     } finally {
       setChatSaving(false);
     }
   }
 
   // =====================================
-  // REUSABLE PRODUCT LIST
+  // REQUEST CHAT DELETION
+  // =====================================
+
+  function requestMessageDelete(message: OrderChatMessage) {
+    const uid = auth.currentUser?.uid;
+
+    if (
+      !uid ||
+      !selectedOrderId ||
+      chatSaving ||
+      deletingMessage ||
+      message.senderUid !== uid
+    ) {
+      return;
+    }
+
+    setDeleteMessageError("");
+
+    setMessageToDelete({
+      orderId: selectedOrderId,
+      messageId: message.id,
+    });
+  }
+
+  // =====================================
+  // PERMANENT CHAT DELETION
+  // =====================================
+
+  async function confirmMessageDelete() {
+    const target = messageToDelete;
+    const uid = auth.currentUser?.uid;
+
+    if (!target || !uid || deletingMessage) return;
+
+    setDeletingMessage(true);
+    setDeleteMessageError("");
+
+    try {
+      const messageRef = doc(
+        db,
+        "orders",
+        target.orderId,
+        "messages",
+        target.messageId
+      );
+
+      await runTransaction(db, async transaction => {
+        const snapshot = await transaction.get(messageRef);
+
+        if (!snapshot.exists()) {
+          throw new Error(
+            "This message has already been deleted."
+          );
+        }
+
+        const data = snapshot.data();
+
+        if (
+          auth.currentUser?.uid !== uid ||
+          data.senderUid !== uid ||
+          data.orderId !== target.orderId
+        ) {
+          throw new Error(
+            "You can only delete messages you sent."
+          );
+        }
+
+        transaction.delete(messageRef);
+      });
+
+      setMessageToDelete(null);
+    } catch (reason) {
+      setDeleteMessageError(errorMessage(reason));
+    } finally {
+      setDeletingMessage(false);
+    }
+  }
+
+  // =====================================
+  // RENDER PRODUCTS
   // =====================================
 
   function renderProducts(
@@ -632,73 +768,64 @@ export default function CustomerOrders() {
   ) {
     return (
       <View style={styles.productList}>
-        {(order.items ?? []).map(
-          (item, index) => {
-            const imageUrl =
-              productImages[item.productId] ||
-              item.imageUrl ||
-              "";
+        {(order.items ?? []).map((item, index) => {
+          const imageUrl =
+            productImages[item.productId] ||
+            item.imageUrl ||
+            "";
 
-            return (
-              <Pressable
-                key={`${item.productId}:${item.color}:${index}`}
-                disabled={large}
-                onPress={() =>
-                  openOrderDetails(order)
-                }
-                style={({ pressed }) => [
-                  styles.productRow,
-                  pressed && !large && {
-                    opacity: 0.75,
-                  },
-                ]}
-              >
-                <ProductPhoto
-                  imageUrl={imageUrl}
-                  name={item.name}
-                  large={large}
-                />
+          return (
+            <Pressable
+              key={`${item.productId}:${item.color}:${index}`}
+              disabled={large}
+              onPress={() => openOrderDetails(order)}
+              style={({ pressed }) => [
+                styles.productRow,
+                pressed && !large && styles.pressed,
+              ]}
+            >
+              <ProductPhoto
+                imageUrl={imageUrl}
+                name={item.name}
+                large={large}
+              />
 
-                <View style={styles.productDetails}>
-                  <Text style={styles.productName}>
-                    {item.name}
-                  </Text>
+              <View style={styles.productDetails}>
+                <Text style={styles.productName}>
+                  {item.name}
+                </Text>
 
+                <Text style={styles.productMeta}>
+                  {item.quantity} × {money(item.price)}
+                </Text>
+
+                {!!item.color && (
                   <Text style={styles.productMeta}>
-                    {item.quantity} ×{" "}
-                    {money(item.price)}
+                    Color: {item.color}
                   </Text>
-
-                  {!!item.color && (
-                    <Text style={styles.productMeta}>
-                      Color: {item.color}
-                    </Text>
-                  )}
-
-                  <Text style={styles.productSubtotal}>
-                    {money(
-                      item.price * item.quantity
-                    )}
-                  </Text>
-                </View>
-
-                {!large && (
-                  <Ionicons
-                    name="chevron-forward"
-                    size={17}
-                    color={MUTED}
-                  />
                 )}
-              </Pressable>
-            );
-          }
-        )}
+
+                <Text style={styles.productSubtotal}>
+                  {money(item.price * item.quantity)}
+                </Text>
+              </View>
+
+              {!large && (
+                <Ionicons
+                  name="chevron-forward"
+                  size={17}
+                  color={MUTED}
+                />
+              )}
+            </Pressable>
+          );
+        })}
       </View>
     );
   }
 
   // =====================================
-  // MAIN SCREEN
+  // SCREEN
   // =====================================
 
   return (
@@ -714,6 +841,8 @@ export default function CustomerOrders() {
           description="Review purchases, customer information and delivery-date requests."
         />
 
+        {/* STATISTICS */}
+
         <Fade delay={100}>
           <View style={styles.statsContainer}>
             <Stat
@@ -726,10 +855,7 @@ export default function CustomerOrders() {
               icon="time-outline"
               label="Pending"
               value={String(
-                orders.filter(
-                  order =>
-                    order.status === "Pending"
-                ).length
+                orders.filter(order => order.status === "Pending").length
               )}
             />
 
@@ -737,10 +863,7 @@ export default function CustomerOrders() {
               icon="checkmark-outline"
               label="Confirmed"
               value={String(
-                orders.filter(
-                  order =>
-                    order.status === "Confirmed"
-                ).length
+                orders.filter(order => order.status === "Confirmed").length
               )}
             />
 
@@ -748,14 +871,13 @@ export default function CustomerOrders() {
               icon="close-circle-outline"
               label="Rejected"
               value={String(
-                orders.filter(
-                  order =>
-                    order.status === "Rejected"
-                ).length
+                orders.filter(order => order.status === "Rejected").length
               )}
             />
           </View>
         </Fade>
+
+        {/* SEARCH AND FILTERS */}
 
         <View style={S.card}>
           <Search
@@ -783,9 +905,7 @@ export default function CustomerOrders() {
                 >
                   <Text
                     style={{
-                      color: active
-                        ? "#FFFFFF"
-                        : DARK,
+                      color: active ? "#FFFFFF" : DARK,
                       fontSize: 11,
                     }}
                   >
@@ -812,15 +932,15 @@ export default function CustomerOrders() {
             </Text>
           )}
 
+          {/* ORDER LIST */}
+
           {displayed.map(order => (
             <View
               key={order.id}
               style={styles.orderContainer}
             >
               <Pressable
-                onPress={() =>
-                  openOrderDetails(order)
-                }
+                onPress={() => openOrderDetails(order)}
                 style={styles.orderHeading}
               >
                 <View style={{ flex: 1 }}>
@@ -852,8 +972,7 @@ export default function CustomerOrders() {
 
                 <Text style={S.muted}>
                   Requested:{" "}
-                  {order.preferredDeliveryDate ||
-                    "None"}
+                  {order.preferredDeliveryDate || "None"}
                 </Text>
 
                 <Text style={S.muted}>
@@ -869,9 +988,7 @@ export default function CustomerOrders() {
               </View>
 
               <Pressable
-                onPress={() =>
-                  openOrderDetails(order)
-                }
+                onPress={() => openOrderDetails(order)}
                 style={styles.viewDetailsButton}
               >
                 <Ionicons
@@ -896,16 +1013,12 @@ export default function CustomerOrders() {
                   <Pressable
                     disabled={!!busy}
                     onPress={() =>
-                      void updateStatus(
-                        order,
-                        "Confirmed"
-                      )
+                      requestDecision(order, "Confirmed")
                     }
                     style={[
                       S.chip,
                       S.chipActive,
-                      !!busy &&
-                        styles.disabledButton,
+                      !!busy && styles.disabledButton,
                     ]}
                   >
                     <Text style={styles.confirmText}>
@@ -918,15 +1031,11 @@ export default function CustomerOrders() {
                   <Pressable
                     disabled={!!busy}
                     onPress={() =>
-                      void updateStatus(
-                        order,
-                        "Rejected"
-                      )
+                      requestDecision(order, "Rejected")
                     }
                     style={[
                       S.chip,
-                      !!busy &&
-                        styles.disabledButton,
+                      !!busy && styles.disabledButton,
                     ]}
                   >
                     <Text style={styles.rejectText}>
@@ -947,7 +1056,8 @@ export default function CustomerOrders() {
       <Modal
         visible={
           !!selectedOrder &&
-          !chatOpen
+          !chatOpen &&
+          !decisionConfirmation
         }
         transparent
         animationType="fade"
@@ -982,9 +1092,7 @@ export default function CustomerOrders() {
               <>
                 <ScrollView
                   style={styles.modalScroll}
-                  contentContainerStyle={
-                    styles.modalContent
-                  }
+                  contentContainerStyle={styles.modalContent}
                   showsVerticalScrollIndicator={false}
                 >
                   <Text style={styles.sectionEyebrow}>
@@ -994,16 +1102,12 @@ export default function CustomerOrders() {
                   {customerLoading ? (
                     <ActivityIndicator
                       color={GREEN}
-                      style={{
-                        marginVertical: 20,
-                      }}
+                      style={{ marginVertical: 20 }}
                     />
                   ) : (
                     <View style={styles.customerCard}>
                       <View style={styles.customerTop}>
-                        <View
-                          style={styles.customerAvatar}
-                        >
+                        <View style={styles.customerAvatar}>
                           <Ionicons
                             name="person-outline"
                             size={25}
@@ -1012,25 +1116,18 @@ export default function CustomerOrders() {
                         </View>
 
                         <View style={{ flex: 1 }}>
-                          <Text
-                            style={styles.customerName}
-                          >
-                            {customer?.fullName ||
-                              "Customer"}
+                          <Text style={styles.customerName}>
+                            {customer?.fullName || "Customer"}
                           </Text>
 
-                          <Text
-                            style={styles.customerSub}
-                          >
+                          <Text style={styles.customerSub}>
                             SilkMart Customer
                           </Text>
                         </View>
                       </View>
 
                       {!!customerError && (
-                        <Text
-                          style={styles.errorText}
-                        >
+                        <Text style={styles.errorText}>
                           {customerError}
                         </Text>
                       )}
@@ -1039,8 +1136,7 @@ export default function CustomerOrders() {
                         icon="person-outline"
                         label="Full Name"
                         value={
-                          customer?.fullName ||
-                          "Not available"
+                          customer?.fullName || "Not available"
                         }
                       />
 
@@ -1048,8 +1144,7 @@ export default function CustomerOrders() {
                         icon="mail-outline"
                         label="Email Address"
                         value={
-                          customer?.email ||
-                          "Not available"
+                          customer?.email || "Not available"
                         }
                       />
 
@@ -1057,8 +1152,7 @@ export default function CustomerOrders() {
                         icon="call-outline"
                         label="Mobile Number"
                         value={
-                          customer?.phoneNumber ||
-                          "Not available"
+                          customer?.phoneNumber || "Not available"
                         }
                       />
 
@@ -1066,8 +1160,7 @@ export default function CustomerOrders() {
                         icon="location-outline"
                         label="Complete Address"
                         value={
-                          customer?.address ||
-                          "Not available"
+                          customer?.address || "Not available"
                         }
                       />
                     </View>
@@ -1077,10 +1170,7 @@ export default function CustomerOrders() {
                     ORDERED PRODUCTS
                   </Text>
 
-                  {renderProducts(
-                    selectedOrder,
-                    true
-                  )}
+                  {renderProducts(selectedOrder, true)}
 
                   <Text style={styles.sectionEyebrow}>
                     ORDER INFORMATION
@@ -1133,8 +1223,7 @@ export default function CustomerOrders() {
                       icon="car-outline"
                       label="Delivery Status"
                       value={
-                        selectedOrder.deliveryStatus ||
-                        "Pending"
+                        selectedOrder.deliveryStatus || "Pending"
                       }
                     />
 
@@ -1151,28 +1240,22 @@ export default function CustomerOrders() {
                 </ScrollView>
 
                 <View style={styles.modalFooter}>
-                  {selectedOrder.status ===
-                    "Pending" && (
-                    <View
-                      style={styles.modalActionRow}
-                    >
+                  {selectedOrder.status === "Pending" && (
+                    <View style={styles.modalActionRow}>
                       <Pressable
                         disabled={!!busy}
                         onPress={() =>
-                          void updateStatus(
+                          requestDecision(
                             selectedOrder,
                             "Confirmed"
                           )
                         }
                         style={[
                           styles.actionConfirm,
-                          !!busy &&
-                            styles.disabledButton,
+                          !!busy && styles.disabledButton,
                         ]}
                       >
-                        <Text
-                          style={styles.actionConfirmText}
-                        >
+                        <Text style={styles.actionConfirmText}>
                           {busy === selectedOrder.id
                             ? "Saving..."
                             : "Confirm"}
@@ -1182,20 +1265,17 @@ export default function CustomerOrders() {
                       <Pressable
                         disabled={!!busy}
                         onPress={() =>
-                          void updateStatus(
+                          requestDecision(
                             selectedOrder,
                             "Rejected"
                           )
                         }
                         style={[
                           styles.actionReject,
-                          !!busy &&
-                            styles.disabledButton,
+                          !!busy && styles.disabledButton,
                         ]}
                       >
-                        <Text
-                          style={styles.actionRejectText}
-                        >
+                        <Text style={styles.actionRejectText}>
                           Reject
                         </Text>
                       </Pressable>
@@ -1204,12 +1284,7 @@ export default function CustomerOrders() {
 
                   <Pressable
                     onPress={openChat}
-                    style={({ pressed }) => [
-                      styles.messageButton,
-                      pressed && {
-                        opacity: 0.85,
-                      },
-                    ]}
+                    style={styles.messageButton}
                   >
                     <Ionicons
                       name="chatbubbles-outline"
@@ -1217,9 +1292,7 @@ export default function CustomerOrders() {
                       color="#FFFFFF"
                     />
 
-                    <Text
-                      style={styles.messageButtonText}
-                    >
+                    <Text style={styles.messageButtonText}>
                       Message Customer
                     </Text>
                   </Pressable>
@@ -1231,13 +1304,120 @@ export default function CustomerOrders() {
       </Modal>
 
       {/* =====================================
-          ORDER CHAT MODAL
+          CONFIRM / REJECT DIALOG
+          ===================================== */}
+
+      <Modal
+        visible={decisionConfirmation !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!busy) {
+            setDecisionConfirmation(null);
+            setDecisionError("");
+          }
+        }}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.decisionCard}>
+            <View
+              style={[
+                styles.decisionIcon,
+                decisionConfirmation?.status === "Rejected" &&
+                  styles.decisionRejectIcon,
+              ]}
+            >
+              <Ionicons
+                name={
+                  decisionConfirmation?.status === "Confirmed"
+                    ? "checkmark-circle-outline"
+                    : "close-circle-outline"
+                }
+                size={27}
+                color={
+                  decisionConfirmation?.status === "Confirmed"
+                    ? GREEN
+                    : RED
+                }
+              />
+            </View>
+
+            <Text style={styles.decisionTitle}>
+              {decisionConfirmation?.status === "Confirmed"
+                ? "Confirm this order?"
+                : "Reject this order?"}
+            </Text>
+
+            <Text style={styles.decisionDescription}>
+              {decisionConfirmation?.status === "Confirmed"
+                ? "Continue to confirm this customer's order? You can schedule its delivery after confirmation."
+                : "Continue to reject this customer's order? This decision cannot be changed here."}
+            </Text>
+
+            {!!decisionError && (
+              <Text style={styles.errorText}>
+                {decisionError}
+              </Text>
+            )}
+
+            <View style={styles.decisionActions}>
+              <Pressable
+                disabled={!!busy}
+                onPress={() => {
+                  setDecisionConfirmation(null);
+                  setDecisionError("");
+                }}
+                style={styles.decisionCancel}
+              >
+                <Text style={styles.decisionCancelText}>
+                  Cancel
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={!!busy}
+                onPress={() => {
+                  if (!decisionConfirmation) return;
+
+                  void updateStatus(
+                    decisionConfirmation.orderId,
+                    decisionConfirmation.status
+                  );
+                }}
+                style={[
+                  styles.decisionAccept,
+                  decisionConfirmation?.status === "Rejected" &&
+                    styles.decisionReject,
+                  !!busy && styles.disabledButton,
+                ]}
+              >
+                {busy ? (
+                  <ActivityIndicator
+                    color="#FFFFFF"
+                    size="small"
+                  />
+                ) : (
+                  <Text style={styles.decisionAcceptText}>
+                    {decisionConfirmation?.status === "Confirmed"
+                      ? "Yes, Confirm"
+                      : "Yes, Reject"}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* =====================================
+          CUSTOMER CHAT MODAL
           ===================================== */}
 
       <Modal
         visible={
           chatOpen &&
-          !!selectedOrder
+          !!selectedOrder &&
+          !messageToDelete
         }
         transparent
         animationType="fade"
@@ -1256,7 +1436,7 @@ export default function CustomerOrders() {
               <Pressable
                 onPress={closeChat}
                 style={styles.closeButton}
-                disabled={chatSaving}
+                disabled={chatSaving || deletingMessage}
               >
                 <Ionicons
                   name="arrow-back"
@@ -1271,8 +1451,7 @@ export default function CustomerOrders() {
                 </Text>
 
                 <Text style={styles.chatTitle}>
-                  {customer?.fullName ||
-                    "Customer Chat"}
+                  {customer?.fullName || "Customer Chat"}
                 </Text>
 
                 <Text
@@ -1306,9 +1485,7 @@ export default function CustomerOrders() {
               {chatLoading && (
                 <ActivityIndicator
                   color={GREEN}
-                  style={{
-                    marginVertical: 25,
-                  }}
+                  style={{ marginVertical: 25 }}
                 />
               )}
 
@@ -1322,26 +1499,23 @@ export default function CustomerOrders() {
                       color={GREEN}
                     />
 
-                    <Text
-                      style={styles.chatEmptyTitle}
-                    >
+                    <Text style={styles.chatEmptyTitle}>
                       Start a conversation
                     </Text>
 
-                    <Text
-                      style={styles.chatEmptyText}
-                    >
-                      Contact the customer about
-                      their order, delivery schedule,
-                      or rescheduling request.
+                    <Text style={styles.chatEmptyText}>
+                      Contact the customer about their order,
+                      delivery schedule, or rescheduling request.
                     </Text>
                   </View>
                 )}
 
+              {/* MESSAGES */}
+
               {chatMessages.map(message => {
                 const fromMe =
-                  message.senderUid ===
-                  auth.currentUser?.uid;
+                  !!auth.currentUser?.uid &&
+                  message.senderUid === auth.currentUser.uid;
 
                 return (
                   <View
@@ -1364,33 +1538,54 @@ export default function CustomerOrders() {
                       <Text
                         style={[
                           styles.messageBody,
-                          fromMe &&
-                            styles.staffMessageBody,
+                          fromMe && styles.staffMessageBody,
                         ]}
                       >
                         {message.text}
                       </Text>
 
-                      <Text
-                        style={[
-                          styles.messageTime,
-                          fromMe &&
-                            styles.staffMessageTime,
-                        ]}
-                      >
-                        {fromMe
-                          ? "You"
-                          : "Customer"}{" "}
-                        ·{" "}
-                        {formatOrderChatTime(
-                          message.createdAt
+                      <View style={styles.messageFooter}>
+                        <Text
+                          style={[
+                            styles.messageTime,
+                            fromMe && styles.staffMessageTime,
+                          ]}
+                        >
+                          {fromMe ? "You" : "Customer"} ·{" "}
+                          {formatOrderChatTime(
+                            message.createdAt
+                          )}
+                        </Text>
+
+                        {/* OWN MESSAGE DELETE ICON */}
+
+                        {fromMe && (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Delete my message"
+                            onPress={() =>
+                              requestMessageDelete(message)
+                            }
+                            disabled={
+                              deletingMessage || chatSaving
+                            }
+                            style={styles.deleteMessageIcon}
+                          >
+                            <Ionicons
+                              name="trash-outline"
+                              size={15}
+                              color="#FFFFFF"
+                            />
+                          </Pressable>
                         )}
-                      </Text>
+                      </View>
                     </View>
                   </View>
                 );
               })}
             </ScrollView>
+
+            {/* CHAT INPUT */}
 
             <View style={styles.chatComposer}>
               {!!chatError && (
@@ -1407,24 +1602,22 @@ export default function CustomerOrders() {
                   placeholder="Type a message..."
                   placeholderTextColor="#91A198"
                   multiline
-                  maxLength={
-                    MAX_CHAT_MESSAGE_LENGTH
-                  }
-                  editable={!chatSaving}
+                  maxLength={MAX_CHAT_MESSAGE_LENGTH}
+                  editable={!chatSaving && !deletingMessage}
                   textAlignVertical="top"
                 />
 
                 <Pressable
                   disabled={
                     chatSaving ||
+                    deletingMessage ||
                     !chatInput.trim()
                   }
-                  onPress={() =>
-                    void sendMessage()
-                  }
+                  onPress={() => void sendMessage()}
                   style={[
                     styles.sendButton,
                     (chatSaving ||
+                      deletingMessage ||
                       !chatInput.trim()) &&
                       styles.disabledButton,
                   ]}
@@ -1451,6 +1644,90 @@ export default function CustomerOrders() {
             </View>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* =====================================
+          DELETE MESSAGE CONFIRMATION
+          ===================================== */}
+
+      <Modal
+        visible={messageToDelete !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!deletingMessage) {
+            setMessageToDelete(null);
+            setDeleteMessageError("");
+          }
+        }}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.decisionCard}>
+            <View style={styles.deleteMessageBadge}>
+              <Ionicons
+                name="trash-outline"
+                size={26}
+                color={RED}
+              />
+            </View>
+
+            <Text style={styles.decisionTitle}>
+              Delete this message?
+            </Text>
+
+            <Text style={styles.decisionDescription}>
+              This permanently removes only your
+              selected message from Firestore.
+              Other messages and order details
+              will remain unchanged.
+            </Text>
+
+            {!!deleteMessageError && (
+              <Text style={styles.errorText}>
+                {deleteMessageError}
+              </Text>
+            )}
+
+            <View style={styles.decisionActions}>
+              <Pressable
+                disabled={deletingMessage}
+                onPress={() => {
+                  setMessageToDelete(null);
+                  setDeleteMessageError("");
+                }}
+                style={styles.decisionCancel}
+              >
+                <Text style={styles.decisionCancelText}>
+                  Cancel
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={deletingMessage}
+                onPress={() =>
+                  void confirmMessageDelete()
+                }
+                style={[
+                  styles.decisionAccept,
+                  styles.decisionReject,
+                  deletingMessage &&
+                    styles.disabledButton,
+                ]}
+              >
+                {deletingMessage ? (
+                  <ActivityIndicator
+                    color="#FFFFFF"
+                    size="small"
+                  />
+                ) : (
+                  <Text style={styles.decisionAcceptText}>
+                    Delete Permanently
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
       </Modal>
     </>
   );
@@ -1554,7 +1831,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#EAF2E8",
+    backgroundColor: SOFT,
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 10,
@@ -1586,6 +1863,10 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
+  pressed: {
+    opacity: 0.75,
+  },
+
   disabledButton: {
     opacity: 0.5,
   },
@@ -1593,12 +1874,12 @@ const styles = StyleSheet.create({
   errorText: {
     color: "#B34D4D",
     fontSize: 12,
+    marginTop: 10,
     marginBottom: 10,
+    textAlign: "center",
   },
 
-  // =====================================
-  // MODAL
-  // =====================================
+  // MODALS
 
   modalBackdrop: {
     flex: 1,
@@ -1646,7 +1927,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#EAF2E8",
+    backgroundColor: SOFT,
   },
 
   modalScroll: {
@@ -1714,7 +1995,7 @@ const styles = StyleSheet.create({
   detailIcon: {
     width: 32,
     height: 32,
-    backgroundColor: "#EAF2E8",
+    backgroundColor: SOFT,
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
@@ -1800,7 +2081,7 @@ const styles = StyleSheet.create({
   },
 
   actionRejectText: {
-    color: "#A43F3F",
+    color: RED,
     fontSize: 12,
     fontWeight: "700",
   },
@@ -1821,9 +2102,100 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  // =====================================
+  // CONFIRMATION DIALOGS
+
+  decisionCard: {
+    width: "100%",
+    maxWidth: 390,
+    alignSelf: "center",
+    alignItems: "center",
+    padding: 24,
+    backgroundColor: SURFACE,
+    borderRadius: 20,
+  },
+
+  decisionIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: SOFT,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+
+  decisionRejectIcon: {
+    backgroundColor: "#FCECEC",
+  },
+
+  decisionTitle: {
+    fontFamily: "serif",
+    color: DARK,
+    fontSize: 24,
+    textAlign: "center",
+  },
+
+  decisionDescription: {
+    fontSize: 12,
+    lineHeight: 19,
+    color: MUTED,
+    textAlign: "center",
+    marginTop: 10,
+  },
+
+  decisionActions: {
+    flexDirection: "row",
+    gap: 10,
+    width: "100%",
+    marginTop: 22,
+  },
+
+  decisionCancel: {
+    flex: 1,
+    minHeight: 45,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: LINE,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  decisionCancelText: {
+    color: DARK,
+    fontWeight: "700",
+    fontSize: 12,
+  },
+
+  decisionAccept: {
+    flex: 1,
+    minHeight: 45,
+    borderRadius: 12,
+    backgroundColor: GREEN,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  decisionReject: {
+    backgroundColor: RED,
+  },
+
+  decisionAcceptText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+
+  deleteMessageBadge: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: "#FCECEC",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+
   // CHAT
-  // =====================================
 
   chatCard: {
     width: "100%",
@@ -1939,14 +2311,28 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
   },
 
+  messageFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginTop: 8,
+  },
+
   messageTime: {
     fontSize: 9,
     color: MUTED,
-    marginTop: 8,
   },
 
   staffMessageTime: {
     color: "#DCEDE1",
+  },
+
+  deleteMessageIcon: {
+    paddingHorizontal: 6,
+    paddingVertical: 5,
+    borderRadius: 7,
+    backgroundColor: "rgba(255,255,255,0.16)",
   },
 
   chatComposer: {

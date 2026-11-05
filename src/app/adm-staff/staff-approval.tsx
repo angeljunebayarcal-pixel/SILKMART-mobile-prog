@@ -34,10 +34,6 @@ import {
 import { auth, db } from "../../firebase/config";
 import { C, Heading, S } from "../../components/AdminUI";
 
-// =====================================
-// TYPES
-// =====================================
-
 type ApprovalFilter =
   | "all"
   | "pending"
@@ -67,18 +63,8 @@ type StaffApplication = {
   reviewedAt: Timestamp | null;
 };
 
-type SummaryCardProps = {
-  icon: React.ComponentProps<typeof Ionicons>["name"];
-  label: string;
-  value: number;
-  subtitle: string;
-  selected: boolean;
-  onPress: () => void;
-};
-
-// =====================================
-// COLORS
-// =====================================
+type IconName =
+  React.ComponentProps<typeof Ionicons>["name"];
 
 const GREEN = C.green;
 const DARK = C.dark;
@@ -87,20 +73,13 @@ const LINE = C.line;
 const CREAM = "#FFFDF8";
 const RED = "#A43F3F";
 const AMBER = "#A57226";
-
-// =====================================
-// HELPERS
-// =====================================
+const SOFT = "#EAF2E8";
 
 function stringValue(value: unknown): string {
-  return typeof value === "string"
-    ? value.trim()
-    : "";
+  return typeof value === "string" ? value.trim() : "";
 }
 
-function asTimestamp(
-  value: unknown
-): Timestamp | null {
+function asTimestamp(value: unknown): Timestamp | null {
   if (
     value !== null &&
     typeof value === "object" &&
@@ -119,46 +98,34 @@ function normalizeApplication(
   id: string,
   data: Record<string, unknown>
 ): StaffApplication {
-  const statusValue = stringValue(
-    data.status
-  ).toLowerCase();
+  const rawStatus = stringValue(data.status).toLowerCase();
 
   const status: ApplicationStatus =
-    statusValue === "approved" ||
-    statusValue === "rejected"
-      ? statusValue
+    rawStatus === "approved" || rawStatus === "rejected"
+      ? rawStatus
       : "pending";
 
   return {
     id,
-    applicantUid:
-      stringValue(data.applicantUid) || id,
+    applicantUid: stringValue(data.applicantUid) || id,
     fullName: stringValue(data.fullName),
     email: stringValue(data.email),
     phoneNumber: stringValue(data.phoneNumber),
     address: stringValue(data.address),
     status,
-    verificationIdName: stringValue(
-      data.verificationIdName
-    ),
+    verificationIdName: stringValue(data.verificationIdName),
     verificationIdSize:
       typeof data.verificationIdSize === "number"
         ? data.verificationIdSize
         : 0,
-    rejectionReason: stringValue(
-      data.rejectionReason
-    ),
-    reviewedBy: stringValue(
-      data.reviewedBy
-    ),
+    rejectionReason: stringValue(data.rejectionReason),
+    reviewedBy: stringValue(data.reviewedBy),
     createdAt: asTimestamp(data.createdAt),
     reviewedAt: asTimestamp(data.reviewedAt),
   };
 }
 
-function formatDate(
-  value: Timestamp | null
-): string {
+function formatDate(value: Timestamp | null): string {
   if (!value) return "Not recorded";
 
   return value.toDate().toLocaleString("en-PH", {
@@ -170,27 +137,20 @@ function formatDate(
   });
 }
 
-function statusColor(
-  status: ApplicationStatus
-): string {
-  if (status === "approved") return GREEN;
-  if (status === "rejected") return RED;
-  return AMBER;
-}
-
 function capitalize(value: string): string {
-  return (
-    value.charAt(0).toUpperCase() +
-    value.slice(1)
-  );
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function canReview(role: string): boolean {
-  return [
-    "administrator",
-    "admin",
-    "staff",
-  ].includes(role.toLowerCase());
+  return ["administrator", "admin", "staff"].includes(
+    role.toLowerCase()
+  );
+}
+
+function statusColor(status: ApplicationStatus): string {
+  if (status === "approved") return GREEN;
+  if (status === "rejected") return RED;
+  return AMBER;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -201,28 +161,21 @@ function getErrorMessage(error: unknown): string {
       ? String(error.code)
       : "";
 
-  if (code === "permission-denied") {
-    return (
-      "Firestore denied this action. Check that " +
-      "the account is an approved Staff or " +
-      "Administrator and the latest security " +
-      "rules are published."
-    );
+  if (
+    code === "permission-denied" ||
+    code === "firestore/permission-denied"
+  ) {
+    return "Firestore denied this action. Check your account permissions and published security rules.";
   }
 
-  if (code === "unavailable") {
-    return (
-      "The Firebase service is unavailable. " +
-      "Please check your connection."
-    );
+  if (code === "unavailable" || code === "firestore/unavailable") {
+    return "Firebase is unavailable. Check your internet connection.";
   }
 
-  return "Unable to complete the request. Please try again.";
+  return error instanceof Error
+    ? error.message
+    : "Unable to complete this request.";
 }
-
-// =====================================
-// SUMMARY CARD
-// =====================================
 
 function SummaryCard({
   icon,
@@ -231,7 +184,14 @@ function SummaryCard({
   subtitle,
   selected,
   onPress,
-}: SummaryCardProps) {
+}: {
+  icon: IconName;
+  label: string;
+  value: number;
+  subtitle: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
   return (
     <Pressable
       onPress={onPress}
@@ -241,31 +201,15 @@ function SummaryCard({
       ]}
     >
       <View style={styles.summaryIcon}>
-        <Ionicons
-          name={icon}
-          size={20}
-          color={GREEN}
-        />
+        <Ionicons name={icon} size={20} color={GREEN} />
       </View>
 
-      <Text style={styles.summaryLabel}>
-        {label}
-      </Text>
-
-      <Text style={styles.summaryValue}>
-        {value}
-      </Text>
-
-      <Text style={styles.summarySubtitle}>
-        {subtitle}
-      </Text>
+      <Text style={styles.summaryLabel}>{label}</Text>
+      <Text style={styles.summaryValue}>{value}</Text>
+      <Text style={styles.summarySubtitle}>{subtitle}</Text>
     </Pressable>
   );
 }
-
-// =====================================
-// DETAIL ROW
-// =====================================
 
 function Detail({
   label,
@@ -276,10 +220,7 @@ function Detail({
 }) {
   return (
     <View style={styles.detailRow}>
-      <Text style={styles.detailLabel}>
-        {label}
-      </Text>
-
+      <Text style={styles.detailLabel}>{label}</Text>
       <Text style={styles.detailValue}>
         {value || "Not available"}
       </Text>
@@ -287,31 +228,20 @@ function Detail({
   );
 }
 
-// =====================================
-// MAIN SCREEN
-// =====================================
-
 export default function StaffApproval() {
-  const [allowed, setAllowed] =
-    useState<boolean | null>(null);
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+  const [reviewerUid, setReviewerUid] = useState("");
+  const [applications, setApplications] = useState<
+    StaffApplication[]
+  >([]);
 
-  const [reviewerUid, setReviewerUid] =
-    useState("");
-
-  const [applications, setApplications] =
-    useState<StaffApplication[]>([]);
-
-  const [loading, setLoading] =
-    useState(true);
-
-  const [error, setError] =
-    useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   const [filter, setFilter] =
     useState<ApprovalFilter>("pending");
-
-  const [search, setSearch] =
-    useState("");
+  const [search, setSearch] = useState("");
 
   const [selected, setSelected] =
     useState<StaffApplication | null>(null);
@@ -331,18 +261,12 @@ export default function StaffApproval() {
   const [rejectionReason, setRejectionReason] =
     useState("");
 
-  const [saving, setSaving] =
-    useState(false);
-
-  const [actionError, setActionError] =
-    useState("");
-
-  const [notice, setNotice] =
-    useState("");
+  const [saving, setSaving] = useState(false);
+  const [actionError, setActionError] = useState("");
 
   const authSession = useRef(0);
   const reviewSession = useRef(0);
-  const mountedRef = useRef(true);
+  const mountedRef = useRef(false);
   const savingRef = useRef(false);
 
   // =====================================
@@ -365,7 +289,6 @@ export default function StaffApproval() {
         setSelected(null);
         setVerificationImage("");
         setVerificationError("");
-        setVerificationLoading(false);
         setReviewAction(null);
         setRejectionReason("");
         setActionError("");
@@ -374,10 +297,8 @@ export default function StaffApproval() {
         setLoading(true);
 
         if (!user) {
-          if (mountedRef.current) {
-            setAllowed(false);
-            setLoading(false);
-          }
+          setAllowed(false);
+          setLoading(false);
           return;
         }
 
@@ -394,30 +315,20 @@ export default function StaffApproval() {
             return;
           }
 
-          const role = stringValue(
-            snapshot.data()?.role
-          );
-
+          const role = stringValue(snapshot.data()?.role);
           const authorized = canReview(role);
 
           setAllowed(authorized);
-          setReviewerUid(
-            authorized ? user.uid : ""
-          );
-
-          if (!authorized) {
-            setLoading(false);
-          }
-        } catch {
+          setReviewerUid(authorized ? user.uid : "");
+          setLoading(authorized);
+        } catch (reason) {
           if (
             mountedRef.current &&
             session === authSession.current
           ) {
             setAllowed(false);
             setLoading(false);
-            setError(
-              "Unable to verify your account permissions."
-            );
+            setError(getErrorMessage(reason));
           }
         }
       }
@@ -432,15 +343,16 @@ export default function StaffApproval() {
   }, []);
 
   // =====================================
-  // REAL-TIME APPLICATIONS
+  // FIRESTORE REAL-TIME APPLICATIONS
   // =====================================
 
   useEffect(() => {
-    if (!allowed || !reviewerUid) {
-      return;
-    }
+    if (!allowed || !reviewerUid) return;
 
     let active = true;
+    let generation = 0;
+
+    let userUnsubscribes: Array<() => void> = [];
 
     setLoading(true);
 
@@ -454,35 +366,149 @@ export default function StaffApproval() {
           return;
         }
 
-        const records = snapshot.docs
-          .map(item =>
-            normalizeApplication(
-              item.id,
-              item.data()
-            )
+        generation += 1;
+        const currentGeneration = generation;
+
+        userUnsubscribes.forEach(stop => stop());
+        userUnsubscribes = [];
+
+        const candidates = snapshot.docs.map(item =>
+          normalizeApplication(item.id, item.data())
+        );
+
+        const applicantIds = Array.from(
+          new Set(
+            candidates.map(app => app.applicantUid)
           )
-          .sort((a, b) => {
+        );
+
+        const accounts = new Map<
+          string,
+          Record<string, unknown> | null
+        >();
+
+        const refresh = () => {
+          if (
+            !active ||
+            currentGeneration !== generation ||
+            auth.currentUser?.uid !== reviewerUid ||
+            accounts.size !== applicantIds.length
+          ) {
+            return;
+          }
+
+          // Show an application only when
+          // its matching Firestore user still exists.
+          const validApplications = candidates.filter(app => {
+            const data = accounts.get(app.applicantUid);
+
+            if (!data) return false;
+
+            const role = stringValue(data.role);
+            const accountStatus = stringValue(
+              data.applicationStatus
+            ).toLowerCase();
+
+            const accountEmail = stringValue(
+              data.email
+            ).toLowerCase();
+
+            const applicationEmail =
+              app.email.trim().toLowerCase();
+
+            const matchesAccount =
+              app.status === "approved"
+                ? role === "staff" &&
+                  accountStatus === "approved"
+                : role === "staffApplicant" &&
+                  accountStatus === app.status;
+
             return (
-              (b.createdAt?.toMillis() ?? 0) -
-              (a.createdAt?.toMillis() ?? 0)
+              matchesAccount &&
+              Boolean(accountEmail) &&
+              accountEmail === applicationEmail
             );
           });
 
-        setApplications(records);
-        setLoading(false);
-        setError("");
-
-        // Keep an open review synchronized
-        // with application status changes.
-
-        setSelected(current => {
-          if (!current) return null;
-
-          const updated = records.find(
-            item => item.id === current.id
+          validApplications.sort(
+            (a, b) =>
+              (b.createdAt?.toMillis() ?? 0) -
+              (a.createdAt?.toMillis() ?? 0)
           );
 
-          return updated || current;
+          // Display only the newest valid application
+          // when multiple records have the same email.
+          const seenEmails = new Set<string>();
+
+          const uniqueApplications =
+            validApplications.filter(app => {
+              const email = app.email.trim().toLowerCase();
+
+              if (seenEmails.has(email)) {
+                return false;
+              }
+
+              seenEmails.add(email);
+              return true;
+            });
+
+          setApplications(uniqueApplications);
+          setLoading(false);
+          setError("");
+
+          setSelected(current =>
+            current
+              ? uniqueApplications.find(
+                  app => app.id === current.id
+                ) || null
+              : null
+          );
+        };
+
+        if (applicantIds.length === 0) {
+          setApplications([]);
+          setSelected(null);
+          setLoading(false);
+          setError("");
+          return;
+        }
+
+        setLoading(true);
+
+        applicantIds.forEach(uid => {
+          const stop = onSnapshot(
+            doc(db, "users", uid),
+            userDocument => {
+              if (
+                !active ||
+                currentGeneration !== generation
+              ) {
+                return;
+              }
+
+              accounts.set(
+                uid,
+                userDocument.exists()
+                  ? userDocument.data()
+                  : null
+              );
+
+              refresh();
+            },
+            reason => {
+              if (
+                !active ||
+                currentGeneration !== generation
+              ) {
+                return;
+              }
+
+              setLoading(false);
+              setError(getErrorMessage(reason));
+            }
+          );
+
+          userUnsubscribes.push(stop);
         });
       },
       reason => {
@@ -490,14 +516,15 @@ export default function StaffApproval() {
 
         setApplications([]);
         setLoading(false);
-        setError(
-          getErrorMessage(reason)
-        );
+        setError(getErrorMessage(reason));
       }
     );
 
     return () => {
       active = false;
+      generation += 1;
+
+      userUnsubscribes.forEach(stop => stop());
       unsubscribe();
     };
   }, [allowed, reviewerUid]);
@@ -506,19 +533,22 @@ export default function StaffApproval() {
   // STATISTICS
   // =====================================
 
-  const stats = useMemo(() => {
-    return {
+  const stats = useMemo(
+    () => ({
       pending: applications.filter(
         app => app.status === "pending"
       ).length,
+
       approved: applications.filter(
         app => app.status === "approved"
       ).length,
+
       rejected: applications.filter(
         app => app.status === "rejected"
       ).length,
-    };
-  }, [applications]);
+    }),
+    [applications]
+  );
 
   // =====================================
   // SEARCH AND FILTER
@@ -529,8 +559,7 @@ export default function StaffApproval() {
 
     return applications.filter(app => {
       const matchesStatus =
-        filter === "all" ||
-        app.status === filter;
+        filter === "all" || app.status === filter;
 
       const matchesSearch =
         !keyword ||
@@ -548,17 +577,13 @@ export default function StaffApproval() {
   }, [applications, filter, search]);
 
   // =====================================
-  // REVIEW APPLICATION
+  // VIEW APPLICATION
   // =====================================
 
   async function viewApplication(
     application: StaffApplication
   ) {
-    if (
-      !allowed ||
-      !reviewerUid ||
-      savingRef.current
-    ) {
+    if (!allowed || !reviewerUid || savingRef.current) {
       return;
     }
 
@@ -595,8 +620,7 @@ export default function StaffApproval() {
         return;
       }
 
-      const imageData =
-        snapshot.data().imageData;
+      const imageData = snapshot.data().imageData;
 
       if (
         typeof imageData !== "string" ||
@@ -613,9 +637,7 @@ export default function StaffApproval() {
       setVerificationImage(imageData);
     } catch (reason) {
       if (session === reviewSession.current) {
-        setVerificationError(
-          getErrorMessage(reason)
-        );
+        setVerificationError(getErrorMessage(reason));
       }
     } finally {
       if (session === reviewSession.current) {
@@ -638,10 +660,6 @@ export default function StaffApproval() {
     setActionError("");
   }
 
-  // =====================================
-  // SELECT APPROVAL ACTION
-  // =====================================
-
   function chooseAction(action: ReviewAction) {
     if (
       !selected ||
@@ -651,12 +669,9 @@ export default function StaffApproval() {
       return;
     }
 
-    if (
-      action === "approve" &&
-      !verificationImage
-    ) {
+    if (action === "approve" && !verificationImage) {
       setActionError(
-        "Open and review the submitted verification ID before approval."
+        "Review the submitted verification ID before approval."
       );
       return;
     }
@@ -667,7 +682,7 @@ export default function StaffApproval() {
   }
 
   // =====================================
-  // SAVE APPROVAL / REJECTION
+  // APPROVE / REJECT
   // =====================================
 
   async function submitReview() {
@@ -702,7 +717,7 @@ export default function StaffApproval() {
 
     if (action === "approve" && !verificationImage) {
       setActionError(
-        "A valid verification ID must be loaded before approval."
+        "A valid verification ID must be reviewed before approval."
       );
       return;
     }
@@ -725,11 +740,6 @@ export default function StaffApproval() {
       if (auth.currentUser?.uid !== reviewer) {
         throw new Error("AUTH_CHANGED");
       }
-
-      // Recheck the reviewer and applicant
-      // before attempting the batch.
-      // Firestore Security Rules remain
-      // responsible for final authorization.
 
       const reviewerSnapshot = await getDoc(
         doc(db, "users", reviewer)
@@ -768,8 +778,7 @@ export default function StaffApproval() {
       }
 
       const userData = userSnapshot.data();
-      const applicationData =
-        applicationSnapshot.data();
+      const applicationData = applicationSnapshot.data();
 
       if (
         userData.role !== "staffApplicant" ||
@@ -786,15 +795,10 @@ export default function StaffApproval() {
         throw new Error("INVALID_APPLICATION");
       }
 
-      // Atomic batch: both documents must
-      // pass the rules or neither is updated.
+      const decision =
+        action === "approve" ? "approved" : "rejected";
 
       const batch = writeBatch(db);
-
-      const decision =
-        action === "approve"
-          ? "approved"
-          : "rejected";
 
       batch.update(
         doc(
@@ -807,6 +811,7 @@ export default function StaffApproval() {
             action === "approve"
               ? "staff"
               : "staffApplicant",
+
           applicationStatus: decision,
           reviewedBy: reviewer,
           reviewedAt: serverTimestamp(),
@@ -834,7 +839,7 @@ export default function StaffApproval() {
 
       if (!mountedRef.current) return;
 
-      closeAfterSuccess();
+      closeDetails();
 
       setNotice(
         action === "approve"
@@ -843,9 +848,7 @@ export default function StaffApproval() {
       );
 
       setFilter(
-        action === "approve"
-          ? "approved"
-          : "rejected"
+        action === "approve" ? "approved" : "rejected"
       );
     } catch (reason) {
       if (!mountedRef.current) return;
@@ -855,7 +858,7 @@ export default function StaffApproval() {
       if (reason instanceof Error) {
         if (reason.message === "ALREADY_REVIEWED") {
           message =
-            "This application has already been reviewed. Refresh the application list.";
+            "This application has already been reviewed.";
         } else if (reason.message === "NOT_FOUND") {
           message =
             "The applicant account or application record could not be found.";
@@ -881,18 +884,6 @@ export default function StaffApproval() {
         setSaving(false);
       }
     }
-  }
-
-  function closeAfterSuccess() {
-    ++reviewSession.current;
-
-    setSelected(null);
-    setReviewAction(null);
-    setRejectionReason("");
-    setVerificationImage("");
-    setVerificationError("");
-    setVerificationLoading(false);
-    setActionError("");
   }
 
   // =====================================
@@ -931,13 +922,11 @@ export default function StaffApproval() {
 
             <Text style={styles.accessText}>
               Only Administrators and already-approved
-              Staff members may review staff applications.
+              Staff members may review applications.
             </Text>
 
             {!!error && (
-              <Text style={styles.error}>
-                {error}
-              </Text>
+              <Text style={styles.error}>{error}</Text>
             )}
           </View>
         ) : (
@@ -954,9 +943,7 @@ export default function StaffApproval() {
                   {notice}
                 </Text>
 
-                <Pressable
-                  onPress={() => setNotice("")}
-                >
+                <Pressable onPress={() => setNotice("")}>
                   <Ionicons
                     name="close"
                     size={17}
@@ -965,8 +952,6 @@ export default function StaffApproval() {
                 </Pressable>
               </View>
             )}
-
-            {/* SUMMARY CARDS */}
 
             <View style={styles.summaryGrid}>
               <SummaryCard
@@ -997,8 +982,6 @@ export default function StaffApproval() {
               />
             </View>
 
-            {/* APPLICATIONS */}
-
             <View style={S.card}>
               <View style={styles.panelHeading}>
                 <View style={{ flex: 1 }}>
@@ -1016,8 +999,6 @@ export default function StaffApproval() {
                   {filteredApplications.length} shown
                 </Text>
               </View>
-
-              {/* SEARCH */}
 
               <View style={styles.searchBox}>
                 <Ionicons
@@ -1037,10 +1018,7 @@ export default function StaffApproval() {
                 />
 
                 {!!search && (
-                  <Pressable
-                    onPress={() => setSearch("")}
-                    accessibilityLabel="Clear search"
-                  >
+                  <Pressable onPress={() => setSearch("")}>
                     <Ionicons
                       name="close-circle"
                       size={18}
@@ -1049,8 +1027,6 @@ export default function StaffApproval() {
                   </Pressable>
                 )}
               </View>
-
-              {/* FILTERS */}
 
               <View style={styles.filterRow}>
                 {(
@@ -1093,9 +1069,7 @@ export default function StaffApproval() {
               )}
 
               {!!error && (
-                <Text style={styles.error}>
-                  {error}
-                </Text>
+                <Text style={styles.error}>{error}</Text>
               )}
 
               {!loading &&
@@ -1122,8 +1096,6 @@ export default function StaffApproval() {
                   </View>
                 )}
 
-              {/* APPLICANT CARDS */}
-
               {!loading &&
                 !error &&
                 filteredApplications.map(app => (
@@ -1142,8 +1114,7 @@ export default function StaffApproval() {
 
                       <View style={{ flex: 1 }}>
                         <Text style={styles.applicantName}>
-                          {app.fullName ||
-                            "Staff Applicant"}
+                          {app.fullName || "Staff Applicant"}
                         </Text>
 
                         <Text style={styles.applicantEmail}>
@@ -1168,9 +1139,7 @@ export default function StaffApproval() {
                           style={[
                             styles.statusText,
                             {
-                              color: statusColor(
-                                app.status
-                              ),
+                              color: statusColor(app.status),
                             },
                           ]}
                         >
@@ -1187,8 +1156,7 @@ export default function StaffApproval() {
                       />
 
                       <Text style={styles.infoText}>
-                        {app.phoneNumber ||
-                          "No mobile number"}
+                        {app.phoneNumber || "No mobile number"}
                       </Text>
                     </View>
 
@@ -1219,9 +1187,7 @@ export default function StaffApproval() {
                     </View>
 
                     <Pressable
-                      onPress={() =>
-                        void viewApplication(app)
-                      }
+                      onPress={() => void viewApplication(app)}
                       style={styles.reviewButton}
                     >
                       <Ionicons
@@ -1244,8 +1210,6 @@ export default function StaffApproval() {
                 ))}
             </View>
 
-            {/* SECURITY NOTICE */}
-
             <View style={styles.securityCard}>
               <Ionicons
                 name="shield-checkmark-outline"
@@ -1254,20 +1218,18 @@ export default function StaffApproval() {
               />
 
               <Text style={styles.securityText}>
-                Administrators and approved Staff
-                may review applications. Verify
-                applicants against authorized PTRI
-                records before approval. Every
-                decision is recorded in Firestore.
+                Administrators and approved Staff may
+                review applications. Verify applicant
+                identity against authorized PTRI records
+                before approval. Decisions are recorded
+                in Firestore.
               </Text>
             </View>
           </>
         )}
       </ScrollView>
 
-      {/* =====================================
-          APPLICATION DETAILS MODAL
-          ===================================== */}
+      {/* APPLICATION DETAILS MODAL */}
 
       <Modal
         visible={selected !== null}
@@ -1308,9 +1270,7 @@ export default function StaffApproval() {
             {selected && (
               <ScrollView
                 style={styles.modalScroll}
-                contentContainerStyle={
-                  styles.modalContent
-                }
+                contentContainerStyle={styles.modalContent}
                 keyboardShouldPersistTaps="handled"
               >
                 <Text style={styles.sectionHeading}>
@@ -1334,9 +1294,7 @@ export default function StaffApproval() {
 
                 <Detail
                   label="Application Date"
-                  value={formatDate(
-                    selected.createdAt
-                  )}
+                  value={formatDate(selected.createdAt)}
                 />
 
                 <Detail
@@ -1346,17 +1304,13 @@ export default function StaffApproval() {
 
                 <Detail
                   label="Application Status"
-                  value={capitalize(
-                    selected.status
-                  )}
+                  value={capitalize(selected.status)}
                 />
 
                 {selected.reviewedAt && (
                   <Detail
                     label="Reviewed At"
-                    value={formatDate(
-                      selected.reviewedAt
-                    )}
+                    value={formatDate(selected.reviewedAt)}
                   />
                 )}
 
@@ -1378,16 +1332,14 @@ export default function StaffApproval() {
                 </Text>
 
                 <Text style={styles.documentHelp}>
-                  Review the submitted ID and
-                  confirm that the applicant is
-                  authorized to work as PTRI Staff.
+                  Review the submitted ID and confirm
+                  that the applicant is authorized
+                  to work as PTRI Staff.
                 </Text>
 
                 {verificationLoading ? (
                   <View style={styles.imageState}>
-                    <ActivityIndicator
-                      color={GREEN}
-                    />
+                    <ActivityIndicator color={GREEN} />
 
                     <Text style={styles.imageStateText}>
                       Loading verification ID...
@@ -1407,9 +1359,7 @@ export default function StaffApproval() {
                   </View>
                 ) : verificationImage ? (
                   <Image
-                    source={{
-                      uri: verificationImage,
-                    }}
+                    source={{ uri: verificationImage }}
                     style={styles.verificationImage}
                     resizeMode="contain"
                     accessibilityLabel="Submitted staff verification ID"
@@ -1428,10 +1378,9 @@ export default function StaffApproval() {
                   />
 
                   <Text style={styles.privacyText}>
-                    Verification documents contain
-                    private applicant information.
-                    Do not share them outside the
-                    authorized review process.
+                    Verification documents contain private
+                    applicant information. Do not share
+                    them outside authorized review.
                   </Text>
                 </View>
 
@@ -1441,16 +1390,13 @@ export default function StaffApproval() {
                   </Text>
                 )}
 
-                {/* APPROVE AND REJECT */}
-
                 {selected.status === "pending" && (
                   <View style={styles.actionArea}>
                     {reviewAction === null ? (
                       <>
                         <Text style={styles.actionHint}>
-                          Select an action after
-                          checking the applicant's
-                          identity and eligibility.
+                          Select an action after checking
+                          the applicant's identity.
                         </Text>
 
                         <View style={styles.actionRow}>
@@ -1637,7 +1583,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
     padding: 13,
-    backgroundColor: "#EAF2E8",
+    backgroundColor: SOFT,
     borderRadius: 12,
     marginBottom: 15,
   },
@@ -1883,7 +1829,7 @@ const styles = StyleSheet.create({
   },
 
   securityCard: {
-    backgroundColor: "#EAF2E8",
+    backgroundColor: SOFT,
     borderRadius: 13,
     padding: 15,
     flexDirection: "row",
@@ -1949,7 +1895,7 @@ const styles = StyleSheet.create({
     width: 35,
     height: 35,
     borderRadius: 18,
-    backgroundColor: "#EAF2E8",
+    backgroundColor: SOFT,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -2040,7 +1986,7 @@ const styles = StyleSheet.create({
   },
 
   privacyNotice: {
-    backgroundColor: "#EAF2E8",
+    backgroundColor: SOFT,
     flexDirection: "row",
     gap: 9,
     borderRadius: 12,

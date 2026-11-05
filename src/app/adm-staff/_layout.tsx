@@ -1,5 +1,9 @@
 
-import React, { useEffect, useRef, useState } from "react";
+import React, {
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   ActivityIndicator,
@@ -28,12 +32,19 @@ import {
 
 import {
   doc,
-  getDoc,
+  onSnapshot,
 } from "firebase/firestore";
 
 import { auth, db } from "../../firebase/config";
 import { C } from "../../components/AdminUI";
-import { useNotificationCounts } from "../../lib/useNotificationCounts";
+
+import {
+  useNotificationCounts,
+} from "../../lib/useNotificationCounts";
+
+// =====================================
+// TYPES
+// =====================================
 
 type Role = "administrator" | "staff" | null;
 
@@ -47,7 +58,7 @@ type MenuPage = {
 };
 
 // =====================================
-// ADMIN AND APPROVED STAFF MENU
+// NAVIGATION PAGES
 // =====================================
 
 const pages: MenuPage[] = [
@@ -83,15 +94,82 @@ const pages: MenuPage[] = [
   },
 ];
 
+// =====================================
+// HELPERS
+// =====================================
+
+function normalizeRole(value: unknown): Role {
+  const role = String(value ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    role === "administrator" ||
+    role === "admin"
+  ) {
+    return "administrator";
+  }
+
+  if (role === "staff") {
+    return "staff";
+  }
+
+  return null;
+}
+
+function getInitial(
+  fullName: string,
+  user: User | null
+): string {
+  const name = fullName.trim();
+
+  const fallback =
+    user?.displayName?.trim() ||
+    user?.email?.split("@")[0]?.trim() ||
+    "Staff";
+
+  const firstCharacter = Array.from(
+    name || fallback
+  )[0];
+
+  return firstCharacter
+    ? firstCharacter.toLocaleUpperCase()
+    : "S";
+}
+
+// =====================================
+// ADMIN / STAFF LAYOUT
+// =====================================
+
 export default function AdminStaffLayout() {
   const router = useRouter();
   const pathname = usePathname();
 
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [user, setUser] = useState<User | null>(null);
-  const [role, setRole] = useState<Role>(null);
-  const [ready, setReady] = useState(false);
-  const { totalUnread } = useNotificationCounts("staff");
+  // =====================================
+  // STATE
+  // =====================================
+
+  const [menuOpen, setMenuOpen] =
+    useState(false);
+
+  const [user, setUser] =
+    useState<User | null>(auth.currentUser);
+
+  const [role, setRole] =
+    useState<Role>(null);
+
+  const [fullName, setFullName] =
+    useState("");
+
+  const [ready, setReady] =
+    useState(false);
+
+  const { totalUnread } =
+    useNotificationCounts("staff");
+
+  // =====================================
+  // MENU ANIMATIONS
+  // =====================================
 
   const menuOpacity = useRef(
     new Animated.Value(0)
@@ -102,67 +180,84 @@ export default function AdminStaffLayout() {
   ).current;
 
   // =====================================
-  // VERIFY STAFF / ADMIN ACCESS
+  // AUTHENTICATION AND ACCOUNT PROFILE
   // =====================================
 
   useEffect(() => {
     let active = true;
-    let requestId = 0;
+
+    let stopProfileListener:
+      (() => void) | undefined;
 
     const unsubscribe = onAuthStateChanged(
       auth,
-      async nextUser => {
-        const currentRequest = ++requestId;
+      nextUser => {
+        stopProfileListener?.();
+        stopProfileListener = undefined;
 
         if (!active) return;
 
         setReady(false);
         setUser(nextUser);
         setRole(null);
+        setFullName("");
 
         if (!nextUser) {
           setReady(true);
           return;
         }
 
-        let nextRole: Role = null;
+        // Read role and full name from
+        // the same Firestore user profile.
 
-        try {
-          const snapshot = await getDoc(
-            doc(db, "users", nextUser.uid)
-          );
+        stopProfileListener = onSnapshot(
+          doc(db, "users", nextUser.uid),
 
-          const rawRole = String(
-            snapshot.data()?.role ?? ""
-          ).trim().toLowerCase();
+          snapshot => {
+            if (!active) return;
 
-          if (
-            rawRole === "administrator" ||
-            rawRole === "admin"
-          ) {
-            nextRole = "administrator";
-          } else if (rawRole === "staff") {
-            nextRole = "staff";
+            if (!snapshot.exists()) {
+              setRole(null);
+              setFullName("");
+              setReady(true);
+              return;
+            }
+
+            const data = snapshot.data();
+
+            const nextRole = normalizeRole(
+              data.role
+            );
+
+            const nextName =
+              typeof data.fullName === "string"
+                ? data.fullName.trim()
+                : "";
+
+            setRole(nextRole);
+            setFullName(nextName);
+            setReady(true);
+          },
+
+          error => {
+            if (!active) return;
+
+            console.warn(
+              "Unable to verify staff profile:",
+              error
+            );
+
+            setRole(null);
+            setFullName("");
+            setReady(true);
           }
-        } catch {
-          nextRole = null;
-        }
-
-        if (
-          !active ||
-          currentRequest !== requestId
-        ) {
-          return;
-        }
-
-        setRole(nextRole);
-        setReady(true);
+        );
       }
     );
 
     return () => {
       active = false;
-      requestId += 1;
+      stopProfileListener?.();
       unsubscribe();
     };
   }, []);
@@ -176,7 +271,7 @@ export default function AdminStaffLayout() {
   }, [pathname]);
 
   // =====================================
-  // PROTECT ADMIN / STAFF ROUTES
+  // ROUTE PROTECTION
   // =====================================
 
   useEffect(() => {
@@ -185,14 +280,19 @@ export default function AdminStaffLayout() {
     if (!user || !role) {
       router.replace("/login");
     }
-  }, [ready, user, role, router]);
+  }, [
+    ready,
+    user,
+    role,
+    router,
+  ]);
 
   // =====================================
-  // MENU ANIMATIONS
+  // MENU ANIMATION
   // =====================================
 
   useEffect(() => {
-    Animated.parallel([
+    const animation = Animated.parallel([
       Animated.timing(menuOpacity, {
         toValue: menuOpen ? 1 : 0,
         duration: 210,
@@ -206,8 +306,20 @@ export default function AdminStaffLayout() {
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
-    ]).start();
-  }, [menuOpen, menuOpacity, menuTranslate]);
+    ]);
+
+    animation.start();
+
+    return () => animation.stop();
+  }, [
+    menuOpen,
+    menuOpacity,
+    menuTranslate,
+  ]);
+
+  // =====================================
+  // NAVIGATION
+  // =====================================
 
   function navigate(path: Href) {
     setMenuOpen(false);
@@ -215,10 +327,23 @@ export default function AdminStaffLayout() {
   }
 
   // =====================================
+  // PROFILE AVATAR INITIAL
+  // =====================================
+
+  const profileInitial = getInitial(
+    fullName,
+    user
+  );
+
+  // =====================================
   // LOADING / ACCESS CHECK
   // =====================================
 
-  if (!ready || !user || !role) {
+  if (
+    !ready ||
+    !user ||
+    !role
+  ) {
     return (
       <View style={styles.loading}>
         <ActivityIndicator
@@ -241,7 +366,11 @@ export default function AdminStaffLayout() {
 
   return (
     <View style={styles.screen}>
+      {/* HEADER */}
+
       <View style={styles.header}>
+        {/* BRAND */}
+
         <View style={styles.brand}>
           <View style={styles.logo}>
             <Ionicons
@@ -251,7 +380,7 @@ export default function AdminStaffLayout() {
             />
           </View>
 
-          <View>
+          <View style={styles.brandText}>
             <Text style={styles.brandName}>
               SilkMart
             </Text>
@@ -262,7 +391,11 @@ export default function AdminStaffLayout() {
           </View>
         </View>
 
+        {/* HEADER ACTIONS */}
+
         <View style={styles.headerRight}>
+          {/* NOTIFICATION ICON */}
+
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={
@@ -282,18 +415,27 @@ export default function AdminStaffLayout() {
               color={C.dark}
               size={22}
             />
+
             {totalUnread > 0 && (
               <View style={styles.notificationBadge}>
-                <Text style={styles.notificationBadgeText}>
-                  {totalUnread > 99 ? "99+" : totalUnread}
+                <Text
+                  style={styles.notificationBadgeText}
+                >
+                  {totalUnread > 99
+                    ? "99+"
+                    : totalUnread}
                 </Text>
               </View>
             )}
           </Pressable>
 
+          {/* PROFILE AVATAR */}
+
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="My Profile"
+            accessibilityLabel={
+              `My Profile, ${fullName || "Staff account"}`
+            }
             onPress={() =>
               navigate(
                 "/adm-staff/prof-adm-staff"
@@ -302,14 +444,18 @@ export default function AdminStaffLayout() {
             style={styles.avatar}
           >
             <Text style={styles.avatarText}>
-              {(user.email?.[0] || "A").toUpperCase()}
+              {profileInitial}
             </Text>
           </Pressable>
+
+          {/* MENU BUTTON */}
 
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={
-              menuOpen ? "Close menu" : "Open menu"
+              menuOpen
+                ? "Close menu"
+                : "Open menu"
             }
             onPress={() =>
               setMenuOpen(previous => !previous)
@@ -317,13 +463,19 @@ export default function AdminStaffLayout() {
             style={styles.touch}
           >
             <Ionicons
-              name={menuOpen ? "close" : "menu"}
+              name={
+                menuOpen
+                  ? "close"
+                  : "menu"
+              }
               color={C.dark}
               size={23}
             />
           </Pressable>
         </View>
       </View>
+
+      {/* PAGE CONTENT */}
 
       <View style={styles.pageContent}>
         <Slot />
@@ -335,11 +487,15 @@ export default function AdminStaffLayout() {
 
       {menuOpen && (
         <>
+          {/* MENU BACKDROP */}
+
           <Pressable
             accessibilityLabel="Close navigation menu"
             onPress={() => setMenuOpen(false)}
             style={styles.scrim}
           />
+
+          {/* MENU CONTENT */}
 
           <Animated.View
             style={[
@@ -347,7 +503,10 @@ export default function AdminStaffLayout() {
               {
                 opacity: menuOpacity,
                 transform: [
-                  { translateY: menuTranslate },
+                  {
+                    translateY:
+                      menuTranslate,
+                  },
                 ],
               },
             ]}
@@ -356,10 +515,7 @@ export default function AdminStaffLayout() {
               showsVerticalScrollIndicator={false}
             >
               <Text style={styles.menuCaption}>
-                {role === "administrator"
-                  ? "ADMIN/STAFF"
-                  : "ADMIN/STAFF"}{" "}
-                · MENU
+                ADMIN/STAFF · MENU
               </Text>
 
               {pages.map(page => {
@@ -379,8 +535,10 @@ export default function AdminStaffLayout() {
                     }
                     style={({ pressed }) => [
                       styles.menuItem,
-                      activePage && styles.selected,
-                      pressed && styles.pressedItem,
+                      activePage &&
+                        styles.selected,
+                      pressed &&
+                        styles.pressedItem,
                     ]}
                   >
                     <Ionicons
@@ -440,6 +598,8 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 
+  // HEADER
+
   header: {
     height: 70,
     backgroundColor: C.white,
@@ -455,6 +615,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 9,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+
+  brandText: {
     flexShrink: 1,
   },
 
@@ -488,7 +653,10 @@ const styles = StyleSheet.create({
 
   touch: {
     padding: 7,
+    position: "relative",
   },
+
+  // NOTIFICATION BADGE
 
   notificationBadge: {
     position: "absolute",
@@ -512,6 +680,8 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 
+  // PROFILE AVATAR
+
   avatar: {
     width: 32,
     height: 32,
@@ -525,12 +695,19 @@ const styles = StyleSheet.create({
 
   avatarText: {
     color: C.green,
+    fontSize: 14,
     fontWeight: "800",
+    textAlign: "center",
+    includeFontPadding: false,
   },
+
+  // PAGE CONTENT
 
   pageContent: {
     flex: 1,
   },
+
+  // MENU BACKDROP
 
   scrim: {
     position: "absolute",
@@ -540,6 +717,8 @@ const styles = StyleSheet.create({
     right: 0,
     backgroundColor: "rgba(0,0,0,0.15)",
   },
+
+  // MENU
 
   menu: {
     position: "absolute",

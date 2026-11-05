@@ -1,8 +1,5 @@
-import React, {
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+
+import React, { useEffect, useMemo, useState } from "react";
 
 import {
   ActivityIndicator,
@@ -37,6 +34,8 @@ import {
 } from "../../components/AdminUI";
 
 import DeliveryDateModal from "../../components/DeliveryDateModal";
+
+import { completeSilkwormDelivery } from "../../lib/silkwormDelivery";
 
 import type {
   DemoOrder,
@@ -86,13 +85,10 @@ const SURFACE = "#FFFDF8";
 // =====================================
 
 function money(amount: number): string {
-  return `₱${Number(amount || 0).toLocaleString(
-    "en-PH",
-    {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }
-  )}`;
+  return `₱${Number(amount || 0).toLocaleString("en-PH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 function formatDate(value?: string): string {
@@ -102,15 +98,8 @@ function formatDate(value?: string): string {
     return value;
   }
 
-  const [year, month, day] = value
-    .split("-")
-    .map(Number);
-
-  const date = new Date(
-    year,
-    month - 1,
-    day
-  );
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
 
   if (
     date.getFullYear() !== year ||
@@ -142,15 +131,8 @@ function validDeliveryDate(value: string): boolean {
     return false;
   }
 
-  const [year, month, day] = value
-    .split("-")
-    .map(Number);
-
-  const date = new Date(
-    year,
-    month - 1,
-    day
-  );
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
 
   return (
     date.getFullYear() === year &&
@@ -159,9 +141,7 @@ function validDeliveryDate(value: string): boolean {
   );
 }
 
-function nextStage(
-  status: DeliveryStatus
-): StageAction | null {
+function nextStage(status: DeliveryStatus): StageAction | null {
   switch (status) {
     case "Scheduled":
       return {
@@ -206,9 +186,7 @@ function normalizeOrder(
 
   return {
     id,
-    customerUid: String(
-      data.customerUid ?? ""
-    ),
+    customerUid: String(data.customerUid ?? ""),
     createdAt:
       typeof data.createdAt?.toDate === "function"
         ? data.createdAt.toDate().toISOString()
@@ -222,15 +200,13 @@ function normalizeOrder(
       data.confirmedDeliveryDate ?? ""
     ),
     paymentMethod: "COD",
-    items: Array.isArray(data.items)
-      ? data.items
-      : [],
+    items: Array.isArray(data.items) ? data.items : [],
     total: Number(data.total ?? 0),
   };
 }
 
 // =====================================
-// PRODUCT IMAGE
+// PRODUCT PHOTO
 // =====================================
 
 function ProductPhoto({
@@ -272,36 +248,31 @@ function ProductPhoto({
 // =====================================
 
 export default function Delivery() {
-  const [orders, setOrders] =
-    useState<DemoOrder[]>([]);
+  const [orders, setOrders] = useState<DemoOrder[]>([]);
 
-  const [productImages, setProductImages] =
-    useState<Record<string, string>>({});
+  const [productImages, setProductImages] = useState<
+    Record<string, string>
+  >({});
 
-  const [queryText, setQueryText] =
-    useState("");
-
-  const [filter, setFilter] =
-    useState<DeliveryFilter>("All");
-
+  const [queryText, setQueryText] = useState("");
+  const [filter, setFilter] = useState<DeliveryFilter>("All");
   const [selectedOrderId, setSelectedOrderId] =
     useState<string | null>(null);
 
-  const [calendarOpen, setCalendarOpen] =
-    useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const [saving, setSaving] =
-    useState(false);
-
-  // Cross-platform confirmation dialog (works in Expo Web and Android).
   const [stageConfirmation, setStageConfirmation] =
-    useState<{ orderId: string; next: DeliveryStatus } | null>(null);
+    useState<{
+      orderId: string;
+      next: DeliveryStatus;
+    } | null>(null);
 
-  const [error, setError] =
-    useState("");
+  const [deleteConfirmationId, setDeleteConfirmationId] =
+    useState<string | null>(null);
 
-  const [loading, setLoading] =
-    useState(true);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   // =====================================
   // REAL-TIME ORDERS
@@ -313,10 +284,7 @@ export default function Delivery() {
       snapshot => {
         const records = snapshot.docs
           .map(entry =>
-            normalizeOrder(
-              entry.id,
-              entry.data()
-            )
+            normalizeOrder(entry.id, entry.data())
           )
           .sort((a, b) =>
             b.createdAt.localeCompare(a.createdAt)
@@ -339,13 +307,12 @@ export default function Delivery() {
   // SELECTED ORDER
   // =====================================
 
-  const selectedOrder = useMemo(() => {
-    return (
-      orders.find(
-        order => order.id === selectedOrderId
-      ) ?? null
-    );
-  }, [orders, selectedOrderId]);
+  const selectedOrder = useMemo(
+    () =>
+      orders.find(order => order.id === selectedOrderId) ??
+      null,
+    [orders, selectedOrderId]
+  );
 
   // =====================================
   // PRODUCT IDS
@@ -364,7 +331,7 @@ export default function Delivery() {
   }, [orders]);
 
   // =====================================
-  // LOAD ORIGINAL PRODUCT IMAGES
+  // LOAD PRODUCT IMAGES
   // =====================================
 
   useEffect(() => {
@@ -381,19 +348,12 @@ export default function Delivery() {
         ids.map(async productId => {
           try {
             const snapshot = await getDoc(
-              doc(
-                db,
-                "products",
-                productId
-              )
+              doc(db, "products", productId)
             );
 
-            if (!snapshot.exists()) {
-              return;
-            }
+            if (!snapshot.exists()) return;
 
-            const imageUrl =
-              snapshot.data().imageUrl;
+            const imageUrl = snapshot.data().imageUrl;
 
             if (
               typeof imageUrl === "string" &&
@@ -402,8 +362,7 @@ export default function Delivery() {
               images[productId] = imageUrl;
             }
           } catch {
-            // Use an older saved image
-            // or the fallback icon.
+            // Use the saved image or fallback icon.
           }
         })
       );
@@ -425,9 +384,7 @@ export default function Delivery() {
   // =====================================
 
   const displayed = useMemo(() => {
-    const search = queryText
-      .trim()
-      .toLowerCase();
+    const search = queryText.trim().toLowerCase();
 
     return orders.filter(order => {
       const matchesFilter =
@@ -437,12 +394,8 @@ export default function Delivery() {
       const searchable = [
         order.id,
         order.customerUid,
-        ...(order.items ?? []).map(
-          item => item.name
-        ),
-        ...(order.items ?? []).map(
-          item => item.color
-        ),
+        ...(order.items ?? []).map(item => item.name),
+        ...(order.items ?? []).map(item => item.color),
       ]
         .join(" ")
         .toLowerCase();
@@ -469,144 +422,192 @@ export default function Delivery() {
     setError("");
 
     try {
-      const orderRef = doc(
-        db,
-        "orders",
-        orderId
-      );
+      // =====================================
+      // NEW: DELIVERED + STOCK DEDUCTION
+      // =====================================
+      //
+      // The helper updates the order, purchased
+      // product quantities, color stock, and
+      // linked silkworm inventory atomically.
+      //
+      // Never use the status-only transaction
+      // when completing a delivery.
 
-      // Transaction reads the latest order
-      // before changing delivery details.
-      // This prevents staff from acting
-      // on an outdated screen value.
+      if (nextStatus === "Delivered") {
+        await completeSilkwormDelivery(orderId);
 
-      await runTransaction(
-        db,
-        async transaction => {
-          const snapshot =
-            await transaction.get(orderRef);
+        setCalendarOpen(false);
+        setSelectedOrderId(null);
 
-          if (!snapshot.exists()) {
-            throw new Error(
-              "This order no longer exists."
-            );
-          }
+        return;
+      }
 
-          const data = snapshot.data();
+      // =====================================
+      // EXISTING DELIVERY TRANSITIONS
+      // =====================================
 
-          if (data.status !== "Confirmed") {
-            throw new Error(
-              "Only confirmed orders can be scheduled for delivery."
-            );
-          }
+      const orderRef = doc(db, "orders", orderId);
 
-          const currentStatus: DeliveryStatus =
-            STAGES.includes(
-              data.deliveryStatus
-            )
-              ? data.deliveryStatus
-              : "Pending";
+      await runTransaction(db, async transaction => {
+        const snapshot = await transaction.get(orderRef);
 
-          if (currentStatus === "Delivered") {
-            throw new Error(
-              "This order is already delivered and cannot be changed."
-            );
-          }
+        if (!snapshot.exists()) {
+          throw new Error(
+            "This order no longer exists."
+          );
+        }
 
-          if (nextStatus === "Scheduled") {
-            if (
-              currentStatus !== "Pending" &&
-              currentStatus !== "Scheduled" &&
-              currentStatus !== "Preparing"
-            ) {
-              throw new Error(
-                "This delivery can no longer be rescheduled."
-              );
-            }
+        const data = snapshot.data();
 
-            const date =
-              requestedDate?.trim() ?? "";
+        if (data.status !== "Confirmed") {
+          throw new Error(
+            "Only confirmed orders can be scheduled for delivery."
+          );
+        }
 
-            if (
-              !validDeliveryDate(date) ||
-              date < localToday()
-            ) {
-              throw new Error(
-                "Please select a valid delivery date that is today or later."
-              );
-            }
+        const currentStatus: DeliveryStatus =
+          STAGES.includes(data.deliveryStatus)
+            ? data.deliveryStatus
+            : "Pending";
 
-            // If an order is already
-            // being prepared, reschedule
-            // its date without resetting
-            // the preparation stage.
+        if (currentStatus === "Delivered") {
+          throw new Error(
+            "This order is already delivered and cannot be changed."
+          );
+        }
 
-            const resultingStatus =
-              currentStatus === "Preparing"
-                ? "Preparing"
-                : "Scheduled";
-
-            transaction.update(orderRef, {
-              deliveryStatus: resultingStatus,
-              confirmedDeliveryDate: date,
-              scheduledAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-
-            return;
-          }
-
-          const expected =
-            nextStage(currentStatus);
-
+        if (nextStatus === "Scheduled") {
           if (
-            !expected ||
-            expected.next !== nextStatus
+            currentStatus !== "Pending" &&
+            currentStatus !== "Scheduled" &&
+            currentStatus !== "Preparing"
           ) {
             throw new Error(
-              "Please complete the current delivery stage before proceeding."
+              "This delivery can no longer be rescheduled."
             );
           }
 
-          const confirmedDate = String(
-            data.confirmedDeliveryDate ?? ""
-          );
+          const date = requestedDate?.trim() ?? "";
 
-          if (!confirmedDate) {
+          if (
+            !validDeliveryDate(date) ||
+            date < localToday()
+          ) {
             throw new Error(
-              "Confirm a delivery date before updating its delivery stage."
+              "Please select a valid delivery date that is today or later."
             );
           }
 
-          const stageTimestampField =
-            nextStatus === "Preparing"
-              ? "preparingAt"
-              : nextStatus === "Out for Delivery"
-                ? "dispatchedAt"
-                : "deliveredAt";
+          const resultingStatus =
+            currentStatus === "Preparing"
+              ? "Preparing"
+              : "Scheduled";
 
           transaction.update(orderRef, {
-            deliveryStatus: nextStatus,
-            confirmedDeliveryDate:
-              confirmedDate,
-            [stageTimestampField]: serverTimestamp(),
+            deliveryStatus: resultingStatus,
+            confirmedDeliveryDate: date,
+            scheduledAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
+
+          return;
         }
-      );
+
+        const expected = nextStage(currentStatus);
+
+        if (
+          !expected ||
+          expected.next !== nextStatus
+        ) {
+          throw new Error(
+            "Please complete the current delivery stage before proceeding."
+          );
+        }
+
+        const confirmedDate = String(
+          data.confirmedDeliveryDate ?? ""
+        );
+
+        if (!confirmedDate) {
+          throw new Error(
+            "Confirm a delivery date before updating its delivery stage."
+          );
+        }
+
+        const stageTimestampField =
+          nextStatus === "Preparing"
+            ? "preparingAt"
+            : "dispatchedAt";
+
+        transaction.update(orderRef, {
+          deliveryStatus: nextStatus,
+          confirmedDeliveryDate: confirmedDate,
+          [stageTimestampField]: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      });
 
       setCalendarOpen(false);
       setSelectedOrderId(null);
     } catch (reason) {
-      const message =
+      setError(
         reason instanceof Error
           ? reason.message
-          : "Unable to update delivery.";
+          : "Unable to update delivery."
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
 
-      setError(message);
+  // =====================================
+  // PERMANENTLY DELETE ELIGIBLE ORDER
+  // =====================================
 
-      // Show errors in the existing page error panel.
-      // Alert.alert is unreliable in React Native Web.
+  async function deleteEligibleOrder(orderId: string) {
+    if (saving || !auth.currentUser) return;
+
+    setSaving(true);
+    setError("");
+
+    try {
+      const orderRef = doc(db, "orders", orderId);
+
+      await runTransaction(db, async transaction => {
+        const snapshot = await transaction.get(orderRef);
+
+        if (!snapshot.exists()) {
+          throw new Error(
+            "This order has already been removed."
+          );
+        }
+
+        const data = snapshot.data();
+
+        const isDelivered =
+          data.status === "Confirmed" &&
+          data.deliveryStatus === "Delivered";
+
+        const isRejected =
+          data.status === "Rejected" &&
+          data.deliveryStatus === "Pending";
+
+        if (!isDelivered && !isRejected) {
+          throw new Error(
+            "Only rejected orders or fully delivered confirmed orders can be deleted."
+          );
+        }
+
+        transaction.delete(orderRef);
+      });
+
+      setDeleteConfirmationId(null);
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to delete this order."
+      );
     } finally {
       setSaving(false);
     }
@@ -639,7 +640,7 @@ export default function Delivery() {
   }
 
   // =====================================
-  // STATS
+  // STATISTICS
   // =====================================
 
   const readyCount = orders.filter(
@@ -649,18 +650,15 @@ export default function Delivery() {
   ).length;
 
   const scheduledCount = orders.filter(
-    order =>
-      order.deliveryStatus === "Scheduled"
+    order => order.deliveryStatus === "Scheduled"
   ).length;
 
   const dispatchedCount = orders.filter(
-    order =>
-      order.deliveryStatus === "Out for Delivery"
+    order => order.deliveryStatus === "Out for Delivery"
   ).length;
 
   const deliveredCount = orders.filter(
-    order =>
-      order.deliveryStatus === "Delivered"
+    order => order.deliveryStatus === "Delivered"
   ).length;
 
   // =====================================
@@ -722,8 +720,7 @@ export default function Delivery() {
           contentContainerStyle={styles.filters}
         >
           {FILTERS.map(option => {
-            const active =
-              filter === option;
+            const active = filter === option;
 
             return (
               <Pressable
@@ -732,9 +729,7 @@ export default function Delivery() {
                   S.chip,
                   active && S.chipActive,
                 ]}
-                onPress={() =>
-                  setFilter(option)
-                }
+                onPress={() => setFilter(option)}
               >
                 <Text
                   style={{
@@ -752,9 +747,7 @@ export default function Delivery() {
         </ScrollView>
 
         {loading && (
-          <ActivityIndicator
-            color={C.green}
-          />
+          <ActivityIndicator color={C.green} />
         )}
 
         {!!error && (
@@ -763,23 +756,17 @@ export default function Delivery() {
           </Text>
         )}
 
-        {!loading &&
-          displayed.length === 0 && (
-            <Text style={S.muted}>
-              No matching delivery requests.
-            </Text>
-          )}
+        {!loading && displayed.length === 0 && (
+          <Text style={S.muted}>
+            No matching delivery requests.
+          </Text>
+        )}
 
         {/* INDIVIDUAL ORDERS */}
 
         {displayed.map(order => {
-          const stage =
-            nextStage(
-              order.deliveryStatus
-            );
-
-          const isConfirmed =
-            order.status === "Confirmed";
+          const stage = nextStage(order.deliveryStatus);
+          const isConfirmed = order.status === "Confirmed";
 
           const canSchedule =
             isConfirmed &&
@@ -787,9 +774,7 @@ export default function Delivery() {
               "Pending",
               "Scheduled",
               "Preparing",
-            ].includes(
-              order.deliveryStatus
-            );
+            ].includes(order.deliveryStatus);
 
           return (
             <View
@@ -800,24 +785,17 @@ export default function Delivery() {
                 {order.id}
               </Text>
 
-              <Text
-                style={styles.customerText}
-              >
-                Customer UID:{" "}
-                {order.customerUid}
+              <Text style={styles.customerText}>
+                Customer UID: {order.customerUid}
               </Text>
 
               {/* PRODUCTS */}
 
-              <View
-                style={styles.productList}
-              >
+              <View style={styles.productList}>
                 {(order.items ?? []).map(
                   (item, index) => {
                     const imageUrl =
-                      productImages[
-                        item.productId
-                      ] ||
+                      productImages[item.productId] ||
                       item.imageUrl ||
                       "";
 
@@ -831,47 +809,25 @@ export default function Delivery() {
                           name={item.name}
                         />
 
-                        <View
-                          style={
-                            styles.productDetails
-                          }
-                        >
-                          <Text
-                            style={
-                              styles.productName
-                            }
-                          >
+                        <View style={styles.productDetails}>
+                          <Text style={styles.productName}>
                             {item.name}
                           </Text>
 
-                          <Text
-                            style={
-                              styles.productMeta
-                            }
-                          >
+                          <Text style={styles.productMeta}>
                             {item.quantity} ×{" "}
                             {money(item.price)}
                           </Text>
 
                           {!!item.color && (
-                            <Text
-                              style={
-                                styles.productMeta
-                              }
-                            >
-                              Color:{" "}
-                              {item.color}
+                            <Text style={styles.productMeta}>
+                              Color: {item.color}
                             </Text>
                           )}
 
-                          <Text
-                            style={
-                              styles.productSubtotal
-                            }
-                          >
+                          <Text style={styles.productSubtotal}>
                             {money(
-                              item.price *
-                                item.quantity
+                              item.price * item.quantity
                             )}
                           </Text>
                         </View>
@@ -884,57 +840,36 @@ export default function Delivery() {
               {/* ORDER SUMMARY */}
 
               <View style={styles.summary}>
-                <View
-                  style={styles.summaryRow}
-                >
-                  <Text
-                    style={
-                      styles.summaryLabel
-                    }
-                  >
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>
                     Total
                   </Text>
 
-                  <Text
-                    style={styles.totalValue}
-                  >
+                  <Text style={styles.totalValue}>
                     {money(order.total)}
                   </Text>
                 </View>
 
-                <Text
-                  style={styles.summaryText}
-                >
-                  Payment: Cash on
-                  Delivery (COD)
+                <Text style={styles.summaryText}>
+                  Payment: Cash on Delivery (COD)
                 </Text>
 
-                <Text
-                  style={styles.summaryText}
-                >
+                <Text style={styles.summaryText}>
                   Preferred date:{" "}
                   {formatDate(
                     order.preferredDeliveryDate
                   )}
                 </Text>
 
-                <Text
-                  style={styles.summaryText}
-                >
-                  Order status:{" "}
-                  {order.status}
+                <Text style={styles.summaryText}>
+                  Order status: {order.status}
                 </Text>
 
-                <Text
-                  style={styles.summaryText}
-                >
-                  Delivery status:{" "}
-                  {order.deliveryStatus}
+                <Text style={styles.summaryText}>
+                  Delivery status: {order.deliveryStatus}
                 </Text>
 
-                <Text
-                  style={styles.summaryText}
-                >
+                <Text style={styles.summaryText}>
                   Confirmed date:{" "}
                   {formatDate(
                     order.confirmedDeliveryDate
@@ -952,20 +887,12 @@ export default function Delivery() {
                       style={[
                         S.chip,
                         S.chipActive,
-                        saving &&
-                          styles.disabledButton,
+                        saving && styles.disabledButton,
                       ]}
-                      onPress={() =>
-                        openCalendar(order)
-                      }
+                      onPress={() => openCalendar(order)}
                     >
-                      <Text
-                        style={
-                          styles.primaryText
-                        }
-                      >
-                        {order.deliveryStatus ===
-                        "Pending"
+                      <Text style={styles.primaryText}>
+                        {order.deliveryStatus === "Pending"
                           ? "Confirm Schedule"
                           : "Reschedule"}
                       </Text>
@@ -978,8 +905,7 @@ export default function Delivery() {
                         disabled={saving}
                         style={[
                           styles.nextStageButton,
-                          saving &&
-                            styles.disabledButton,
+                          saving && styles.disabledButton,
                         ]}
                         onPress={() => {
                           setStageConfirmation({
@@ -994,62 +920,97 @@ export default function Delivery() {
                           size={16}
                         />
 
-                        <Text
-                          style={
-                            styles.nextStageText
-                          }
-                        >
+                        <Text style={styles.nextStageText}>
                           {stage.label}
                         </Text>
                       </Pressable>
                     )}
 
-                  {order.deliveryStatus ===
-                    "Delivered" && (
-                    <View
-                      style={
-                        styles.completedBox
-                      }
-                    >
+                  {order.deliveryStatus === "Delivered" && (
+                    <View style={styles.completedBox}>
                       <Ionicons
                         name="checkmark-circle"
                         size={19}
                         color={C.green}
                       />
 
-                      <Text
-                        style={
-                          styles.completedText
-                        }
-                      >
+                      <Text style={styles.completedText}>
                         Delivery completed.
                       </Text>
                     </View>
                   )}
+
+                  {order.deliveryStatus === "Delivered" && (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Delete delivered order ${order.id}`}
+                      disabled={saving}
+                      style={[
+                        styles.deleteDeliveredButton,
+                        saving && styles.disabledButton,
+                      ]}
+                      onPress={() =>
+                        setDeleteConfirmationId(order.id)
+                      }
+                    >
+                      <Ionicons
+                        name="trash-outline"
+                        size={17}
+                        color="#A43F3F"
+                      />
+
+                      <Text style={styles.deleteDeliveredText}>
+                        Delete Delivered Order
+                      </Text>
+                    </Pressable>
+                  )}
                 </View>
               ) : (
-                <View
-                  style={styles.noticeBox}
-                >
-                  <Ionicons
-                    name={
-                      order.status ===
-                      "Rejected"
-                        ? "close-circle-outline"
-                        : "time-outline"
-                    }
-                    size={17}
-                    color={C.green}
-                  />
+                <View>
+                  <View style={styles.noticeBox}>
+                    <Ionicons
+                      name={
+                        order.status === "Rejected"
+                          ? "close-circle-outline"
+                          : "time-outline"
+                      }
+                      size={17}
+                      color={C.green}
+                    />
 
-                  <Text
-                    style={styles.noticeText}
-                  >
-                    {order.status ===
-                    "Rejected"
-                      ? "This order was rejected. Delivery scheduling is unavailable."
-                      : "Confirm this order in Customer Orders before scheduling delivery."}
-                  </Text>
+                    <Text style={styles.noticeText}>
+                      {order.status === "Rejected"
+                        ? "This order was rejected. Delivery scheduling is unavailable."
+                        : "Confirm this order in Customer Orders before scheduling delivery."}
+                    </Text>
+                  </View>
+
+                  {order.status === "Rejected" &&
+                    order.deliveryStatus === "Pending" && (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Delete rejected order ${order.id}`}
+                        disabled={saving}
+                        style={[
+                          styles.deleteDeliveredButton,
+                          styles.rejectedDeleteButton,
+                          saving && styles.disabledButton,
+                        ]}
+                        onPress={() =>
+                          setDeleteConfirmationId(order.id)
+                        }
+                      >
+                        <Ionicons
+                          name="trash-outline"
+                          size={17}
+                          color="#A43F3F"
+                        />
+
+                        <Text style={styles.deleteDeliveredText}>
+                          Delete Rejected Order
+                        </Text>
+                      </Pressable>
+                    )}
                 </View>
               )}
             </View>
@@ -1074,7 +1035,7 @@ export default function Delivery() {
         }}
       />
 
-      {/* CROSS-PLATFORM DELIVERY CONFIRMATION */}
+      {/* DELIVERY CONFIRMATION */}
 
       <Modal
         visible={stageConfirmation !== null}
@@ -1093,36 +1054,139 @@ export default function Delivery() {
                 size={25}
               />
             </View>
+
             <Text style={styles.confirmTitle}>
-              Update Delivery
+              {stageConfirmation?.next === "Delivered"
+                ? "Complete Delivery"
+                : "Update Delivery"}
             </Text>
+
             <Text style={styles.confirmDescription}>
-              {stageConfirmation
-                ? `Change delivery status to "${stageConfirmation.next}"?`
-                : ""}
+              {stageConfirmation?.next === "Delivered"
+                ? "Mark this order as Delivered and deduct all purchased products from stock, including linked silkworm inventory?"
+                : stageConfirmation
+                  ? `Change delivery status to "${stageConfirmation.next}"?`
+                  : ""}
             </Text>
+
             <View style={styles.confirmActions}>
               <Pressable
                 disabled={saving}
-                onPress={() => setStageConfirmation(null)}
+                onPress={() =>
+                  setStageConfirmation(null)
+                }
                 style={styles.confirmCancel}
               >
-                <Text style={styles.confirmCancelText}>Cancel</Text>
+                <Text style={styles.confirmCancelText}>
+                  Cancel
+                </Text>
               </Pressable>
+
               <Pressable
                 disabled={saving}
                 onPress={() => {
                   const choice = stageConfirmation;
                   if (!choice || saving) return;
+
                   setStageConfirmation(null);
-                  void saveDelivery(choice.orderId, choice.next);
+
+                  void saveDelivery(
+                    choice.orderId,
+                    choice.next
+                  );
                 }}
-                style={[styles.confirmAccept, saving && styles.disabledButton]}
+                style={[
+                  styles.confirmAccept,
+                  saving && styles.disabledButton,
+                ]}
               >
                 {saving ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
+                  <ActivityIndicator
+                    color="#FFFFFF"
+                    size="small"
+                  />
                 ) : (
-                  <Text style={styles.confirmAcceptText}>Confirm</Text>
+                  <Text style={styles.confirmAcceptText}>
+                    Confirm
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* DELETE ORDER CONFIRMATION */}
+
+      <Modal
+        visible={deleteConfirmationId !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!saving) setDeleteConfirmationId(null);
+        }}
+      >
+        <View style={styles.confirmBackdrop}>
+          <View style={styles.confirmCard}>
+            <View style={styles.deleteConfirmIcon}>
+              <Ionicons
+                name="trash-outline"
+                color="#A43F3F"
+                size={25}
+              />
+            </View>
+
+            <Text style={styles.confirmTitle}>
+              {orders.find(
+                order => order.id === deleteConfirmationId
+              )?.status === "Rejected"
+                ? "Delete Rejected Order?"
+                : "Delete Delivered Order?"}
+            </Text>
+
+            <Text style={styles.confirmDescription}>
+              This permanently removes the order record from
+              Firestore, including its appearance in customer
+              order history and delivery management. This
+              action cannot be undone.
+            </Text>
+
+            <View style={styles.confirmActions}>
+              <Pressable
+                disabled={saving}
+                onPress={() =>
+                  setDeleteConfirmationId(null)
+                }
+                style={styles.confirmCancel}
+              >
+                <Text style={styles.confirmCancelText}>
+                  Cancel
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={saving}
+                onPress={() => {
+                  if (deleteConfirmationId) {
+                    void deleteEligibleOrder(
+                      deleteConfirmationId
+                    );
+                  }
+                }}
+                style={[
+                  styles.deleteConfirmButton,
+                  saving && styles.disabledButton,
+                ]}
+              >
+                {saving ? (
+                  <ActivityIndicator
+                    color="#FFFFFF"
+                    size="small"
+                  />
+                ) : (
+                  <Text style={styles.confirmAcceptText}>
+                    Delete Permanently
+                  </Text>
                 )}
               </Pressable>
             </View>
@@ -1138,13 +1202,10 @@ export default function Delivery() {
         </Text>
 
         <Text style={styles.calendarInfo}>
-          Select a date to confirm or
-          reschedule delivery. Each order
-          moves through Scheduled,
-          Preparing, Out for Delivery,
-          and Delivered. SilkMart does
-          not include courier integration
-          or live vehicle tracking.
+          Select a date to confirm or reschedule delivery.
+          Each order moves through Scheduled, Preparing,
+          Out for Delivery, and Delivered. SilkMart does
+          not include courier integration or live vehicle tracking.
         </Text>
       </View>
     </ScrollView>
@@ -1163,6 +1224,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 20,
   },
+
   confirmCard: {
     width: "100%",
     maxWidth: 380,
@@ -1171,6 +1233,7 @@ const styles = StyleSheet.create({
     padding: 22,
     alignItems: "center",
   },
+
   confirmIcon: {
     width: 50,
     height: 50,
@@ -1180,24 +1243,28 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 12,
   },
+
   confirmTitle: {
     color: C.dark,
     fontSize: 22,
     fontFamily: "serif",
     marginBottom: 8,
   },
+
   confirmDescription: {
     color: "#627C6E",
     textAlign: "center",
     fontSize: 13,
     lineHeight: 21,
   },
+
   confirmActions: {
     flexDirection: "row",
     gap: 10,
     marginTop: 22,
     width: "100%",
   },
+
   confirmCancel: {
     flex: 1,
     minHeight: 44,
@@ -1207,11 +1274,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+
   confirmCancelText: {
     color: C.dark,
     fontWeight: "700",
     fontSize: 12,
   },
+
   confirmAccept: {
     flex: 1,
     minHeight: 44,
@@ -1220,11 +1289,54 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: C.green,
   },
+
   confirmAcceptText: {
     color: "#FFFFFF",
     fontWeight: "700",
     fontSize: 12,
   },
+
+  deleteConfirmIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: "#FFF0EC",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+
+  deleteConfirmButton: {
+    flex: 1,
+    minHeight: 44,
+    backgroundColor: "#A43F3F",
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  rejectedDeleteButton: {
+    marginTop: 10,
+  },
+
+  deleteDeliveredButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    borderWidth: 1,
+    borderColor: "#E8C9C3",
+    backgroundColor: "#FFF8F5",
+    borderRadius: 11,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+
+  deleteDeliveredText: {
+    color: "#A43F3F",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
   statsContainer: {
     flexDirection: "row",
     flexWrap: "wrap",
