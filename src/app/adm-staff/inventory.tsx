@@ -1,10 +1,5 @@
 
-import React, {
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -24,12 +19,12 @@ import { onAuthStateChanged, type User } from "firebase/auth";
 
 import {
   collection,
+  deleteDoc,
   doc,
   onSnapshot,
   runTransaction,
   serverTimestamp,
   writeBatch,
-  type DocumentData,
 } from "firebase/firestore";
 
 import * as ImagePicker from "expo-image-picker";
@@ -89,6 +84,11 @@ type Editor =
   | "reserved"
   | null;
 
+type Notice = {
+  title: string;
+  message: string;
+};
+
 // =====================================
 // CONSTANTS
 // =====================================
@@ -112,9 +112,7 @@ const CONDITIONS = [
   "Quarantined",
 ];
 
-// =====================================
-// DEFAULT VALUES
-// =====================================
+const COCOON_LOW_STOCK_THRESHOLD = 100;
 
 const blankSpecies = (): Species => ({
   id: "",
@@ -140,9 +138,7 @@ const blankCocoons = (): Cocoons => ({
 // =====================================
 
 const asNumber = (value: unknown) =>
-  Number.isFinite(Number(value))
-    ? Number(value)
-    : 0;
+  Number.isFinite(Number(value)) ? Number(value) : 0;
 
 const positiveInteger = (value: string) =>
   value.trim() !== "" &&
@@ -155,15 +151,6 @@ const signedInteger = (value: string) =>
 
 const fmt = (value: number) =>
   value.toLocaleString("en-PH");
-
-function notify(title: string, message: string) {
-  if (Platform.OS === "web") {
-    window.alert(`${title}\n\n${message}`);
-    return;
-  }
-
-  Alert.alert(title, message);
-}
 
 function formatError(error: unknown) {
   const code =
@@ -273,10 +260,6 @@ function SelectChips({
 // =====================================
 
 export default function Inventory() {
-  // =====================================
-  // STATE
-  // =====================================
-
   const [user, setUser] = useState<User | null>(
     auth.currentUser
   );
@@ -332,6 +315,12 @@ export default function Inventory() {
   const [unusableChange, setUnusableChange] =
     useState("0");
 
+  const [showAllActivity, setShowAllActivity] =
+    useState(false);
+
+  const [cocoonsExist, setCocoonsExist] =
+    useState(false);
+
   const [reservedText, setReservedText] =
     useState("0");
 
@@ -347,15 +336,36 @@ export default function Inventory() {
 
   const busy = saving || processingImage;
 
+  // Compact error popup
+
+  const [notice, setNotice] = useState<
+    Notice | null
+  >(null);
+
+  function notify(title: string, message: string) {
+    setNotice({ title, message });
+  }
+
+  // =====================================
+  // ACTIVITY DELETE STATE
+  // =====================================
+
+  const [
+    activityToDelete,
+    setActivityToDelete,
+  ] = useState<Activity | null>(null);
+
+  const [
+    deletingActivity,
+    setDeletingActivity,
+  ] = useState(false);
+
   // =====================================
   // AUTHENTICATION
   // =====================================
 
   useEffect(() => {
-    return onAuthStateChanged(
-      auth,
-      setUser
-    );
+    return onAuthStateChanged(auth, setUser);
   }, []);
 
   // =====================================
@@ -365,6 +375,7 @@ export default function Inventory() {
   useEffect(() => {
     setSpecies([]);
     setCocoons(blankCocoons());
+    setCocoonsExist(false);
     setActivities([]);
     setError("");
     setReady(false);
@@ -382,11 +393,8 @@ export default function Inventory() {
       setReady(true);
     };
 
-    // Silkworm inventory
-
     const subSpecies = onSnapshot(
       collection(db, "inventory_species"),
-
       snapshot => {
         const items: Species[] =
           snapshot.docs.map(item => {
@@ -398,15 +406,11 @@ export default function Inventory() {
               scientificName: String(
                 data.scientificName ?? ""
               ),
-              stage: String(
-                data.stage ?? "Egg"
-              ),
+              stage: String(data.stage ?? "Egg"),
               condition: String(
                 data.condition ?? "Healthy"
               ),
-              quantity: asNumber(
-                data.quantity
-              ),
+              quantity: asNumber(data.quantity),
               threshold: asNumber(
                 data.threshold ?? 10
               ),
@@ -428,29 +432,23 @@ export default function Inventory() {
           setReady(true);
         }
       },
-
       handleError
     );
 
-    // Cocoon inventory
-
     const subCocoons = onSnapshot(
       doc(db, "inventory", "cocoons"),
-
       snapshot => {
         const data = snapshot.data();
+
+        setCocoonsExist(snapshot.exists());
 
         setCocoons(
           data
             ? {
                 good: asNumber(data.good),
                 minor: asNumber(data.minor),
-                unusable: asNumber(
-                  data.unusable
-                ),
-                reserved: asNumber(
-                  data.reserved
-                ),
+                unusable: asNumber(data.unusable),
+                reserved: asNumber(data.reserved),
                 imageUrl: String(
                   data.imageUrl ?? ""
                 ),
@@ -464,7 +462,6 @@ export default function Inventory() {
           setReady(true);
         }
       },
-
       handleError
     );
 
@@ -472,7 +469,6 @@ export default function Inventory() {
 
     const subActivity = onSnapshot(
       collection(db, "inventory_activity"),
-
       snapshot => {
         const items: Activity[] =
           snapshot.docs.map(item => ({
@@ -486,8 +482,7 @@ export default function Inventory() {
             type: String(
               item.data().type ?? "edit"
             ),
-            createdAt:
-              item.data().createdAt,
+            createdAt: item.data().createdAt,
           }));
 
         items.sort(
@@ -496,9 +491,8 @@ export default function Inventory() {
             (a.createdAt?.toMillis?.() ?? 0)
         );
 
-        setActivities(items.slice(0, 5));
+        setActivities(items);
       },
-
       handleError
     );
 
@@ -558,6 +552,15 @@ export default function Inventory() {
       item.quantity <= item.threshold
   );
 
+  const cocoonLowStock =
+    cocoonsExist &&
+    availableCocoons <=
+      COCOON_LOW_STOCK_THRESHOLD;
+
+  const lowStockAlertCount =
+    lowStock.length +
+    (cocoonLowStock ? 1 : 0);
+
   // =====================================
   // OPEN EDITORS
   // =====================================
@@ -567,15 +570,8 @@ export default function Inventory() {
 
     setForm({ ...value });
     setSelectedId(item?.id ?? "");
-
-    setQuantityText(
-      String(value.quantity)
-    );
-
-    setThresholdText(
-      String(value.threshold)
-    );
-
+    setQuantityText(String(value.quantity));
+    setThresholdText(String(value.threshold));
     setEditor("species");
   }
 
@@ -586,18 +582,15 @@ export default function Inventory() {
   }
 
   function editCocoons() {
-    setGoodChange("0");
-    setMinorChange("0");
-    setUnusableChange("0");
+    setGoodChange(String(cocoons.good));
+    setMinorChange(String(cocoons.minor));
+    setUnusableChange(String(cocoons.unusable));
     setCocoonImage(cocoons.imageUrl);
     setEditor("cocoons");
   }
 
   function editReserved() {
-    setReservedText(
-      String(cocoons.reserved)
-    );
-
+    setReservedText(String(cocoons.reserved));
     setEditor("reserved");
   }
 
@@ -714,19 +707,68 @@ export default function Inventory() {
   }
 
   // =====================================
+  // DELETE SELECTED ACTIVITY ONLY
+  // =====================================
+
+  function confirmActivityDelete(
+    item: Activity
+  ) {
+    if (!user || deletingActivity) return;
+
+    setActivityToDelete(item);
+  }
+
+  async function deleteSelectedActivity() {
+    if (
+      !user ||
+      !activityToDelete ||
+      deletingActivity
+    ) {
+      return;
+    }
+
+    const selected = activityToDelete;
+
+    setDeletingActivity(true);
+
+    try {
+      // Delete only this inventory activity document.
+      // No inventory quantities, species or cocoon
+      // records are modified.
+
+      await deleteDoc(
+        doc(
+          db,
+          "inventory_activity",
+          selected.id
+        )
+      );
+
+      setActivityToDelete(null);
+
+      // onSnapshot automatically updates both
+      // Recent Activity and View All.
+    } catch (reason) {
+      setActivityToDelete(null);
+
+      notify(
+        "Unable to delete activity",
+        formatError(reason)
+      );
+    } finally {
+      setDeletingActivity(false);
+    }
+  }
+
+  // =====================================
   // SAVE SILKWORM SPECIES
   // =====================================
 
   async function saveSpecies() {
     if (!user || busy) return;
 
-    const quantity = Number(
-      quantityText
-    );
-
-    const threshold = Number(
-      thresholdText
-    );
+    const quantity = Number(quantityText);
+    const threshold = Number(thresholdText);
 
     if (
       !form.name.trim() ||
@@ -997,11 +1039,11 @@ export default function Inventory() {
         goodChange,
         minorChange,
         unusableChange,
-      ].every(signedInteger)
+      ].every(positiveInteger)
     ) {
       notify(
         "Invalid quantities",
-        "Enter whole-number changes for each cocoon quality."
+        "Enter non-negative whole-number totals for each cocoon quality."
       );
 
       return;
@@ -1022,25 +1064,15 @@ export default function Inventory() {
           const snapshot =
             await transaction.get(reference);
 
-          const data: DocumentData =
+          const data =
             snapshot.data() ?? {};
 
           const next = {
-            good:
-              asNumber(data.good) +
-              Number(goodChange),
-
-            minor:
-              asNumber(data.minor) +
-              Number(minorChange),
-
-            unusable:
-              asNumber(data.unusable) +
-              Number(unusableChange),
-
+            good: Number(goodChange),
+            minor: Number(minorChange),
+            unusable: Number(unusableChange),
             reserved:
               asNumber(data.reserved),
-
             imageUrl: cocoonImage,
           };
 
@@ -1050,9 +1082,9 @@ export default function Inventory() {
               next.minor,
               next.unusable,
             ].some(
-              num =>
-                num < 0 ||
-                !Number.isSafeInteger(num)
+              value =>
+                value < 0 ||
+                !Number.isSafeInteger(value)
             )
           ) {
             throw new Error(
@@ -1087,9 +1119,10 @@ export default function Inventory() {
             ),
             {
               message:
-                "Cocoon inventory adjusted",
+                "Cocoon inventory edited",
               detail:
-                `Good ${goodChange}, Minor ${minorChange}, Unusable ${unusableChange}`,
+                `New totals — Good ${goodChange}, ` +
+                `Minor ${minorChange}, Unusable ${unusableChange}`,
               type: "cocoon",
               actorUid: user.uid,
               createdAt:
@@ -1146,9 +1179,8 @@ export default function Inventory() {
           const record =
             snapshot.data() ?? {};
 
-          const reserved = Number(
-            reservedText
-          );
+          const reserved =
+            Number(reservedText);
 
           if (
             reserved >
@@ -1164,25 +1196,18 @@ export default function Inventory() {
             {
               good:
                 asNumber(record.good),
-
               minor:
                 asNumber(record.minor),
-
               unusable:
                 asNumber(record.unusable),
-
               imageUrl:
                 String(
                   record.imageUrl ?? ""
                 ),
-
               reserved,
-
               updatedAt:
                 serverTimestamp(),
-
-              updatedBy:
-                user.uid,
+              updatedBy: user.uid,
             }
           );
 
@@ -1216,6 +1241,45 @@ export default function Inventory() {
     } finally {
       setSaving(false);
     }
+  }
+
+  // =====================================
+  // SHARED ACTIVITY ROW
+  // =====================================
+
+  function renderActivity(item: Activity) {
+    return (
+      <View
+        key={item.id}
+        style={styles.activityRow}
+      >
+        <View style={styles.activityInformation}>
+          <Text style={S.strong}>
+            {item.message}
+          </Text>
+
+          <Text style={S.muted}>
+            {item.detail}
+          </Text>
+        </View>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Delete activity: ${item.message}`}
+          disabled={deletingActivity}
+          onPress={() =>
+            confirmActivityDelete(item)
+          }
+          style={styles.activityDeleteButton}
+        >
+          <Ionicons
+            name="trash-outline"
+            size={18}
+            color="#B34D4D"
+          />
+        </Pressable>
+      </View>
+    );
   }
 
   // =====================================
@@ -1254,9 +1318,7 @@ export default function Inventory() {
           />
         )}
 
-        {/* =====================================
-            INVENTORY STATISTICS
-            ===================================== */}
+        {/* INVENTORY STATISTICS */}
 
         <Fade delay={100}>
           <View style={styles.statGrid}>
@@ -1275,62 +1337,45 @@ export default function Inventory() {
             <Stat
               icon="ellipse-outline"
               label="Available Cocoons"
-              value={fmt(
-                availableCocoons
-              )}
+              value={fmt(availableCocoons)}
             />
 
             <Stat
               icon="alert-circle-outline"
               label="Low Stock Alerts"
-              value={fmt(
-                lowStock.length
-              )}
+              value={fmt(lowStockAlertCount)}
             />
           </View>
         </Fade>
 
-        {/* =====================================
-            INVENTORY TABS
-            ===================================== */}
-
         <View style={styles.tabs}>
-          {(
-            [
-              "Silkworms",
-              "Cocoons",
-            ] as Tab[]
-          ).map(option => (
-            <Pressable
-              key={option}
-              onPress={() =>
-                setTab(option)
-              }
-              style={[
-                S.chip,
-                tab === option &&
-                  S.chipActive,
-              ]}
-            >
-              <Text
-                style={{
-                  color:
-                    tab === option
-                      ? "#FFFFFF"
-                      : C.dark,
-                  fontSize: 12,
-                  fontWeight: "700",
-                }}
+          {(["Silkworms", "Cocoons"] as Tab[]).map(
+            option => (
+              <Pressable
+                key={option}
+                onPress={() => setTab(option)}
+                style={[
+                  S.chip,
+                  tab === option &&
+                    S.chipActive,
+                ]}
               >
-                {option}
-              </Text>
-            </Pressable>
-          ))}
+                <Text
+                  style={{
+                    color:
+                      tab === option
+                        ? "#FFFFFF"
+                        : C.dark,
+                    fontSize: 12,
+                    fontWeight: "700",
+                  }}
+                >
+                  {option}
+                </Text>
+              </Pressable>
+            )
+          )}
         </View>
-
-        {/* =====================================
-            SILKWORM INVENTORY
-            ===================================== */}
 
         {tab === "Silkworms" ? (
           <Fade delay={100}>
@@ -1342,9 +1387,7 @@ export default function Inventory() {
 
                 <Pressable
                   disabled={busy}
-                  onPress={() =>
-                    editSpecies()
-                  }
+                  onPress={() => editSpecies()}
                   style={styles.addButton}
                 >
                   <Ionicons
@@ -1371,9 +1414,8 @@ export default function Inventory() {
 
               {filtered.length === 0 && (
                 <Text style={S.muted}>
-                  No species records found.
-                  Add a silkworm species
-                  to get started.
+                  No species records found. Add a
+                  silkworm species to get started.
                 </Text>
               )}
 
@@ -1508,10 +1550,6 @@ export default function Inventory() {
             </View>
           </Fade>
         ) : (
-          // =====================================
-          // COCOON INVENTORY
-          // =====================================
-
           <Fade delay={100}>
             <View style={S.card}>
               <Text style={S.sectionTitle}>
@@ -1527,8 +1565,8 @@ export default function Inventory() {
                   },
                 ]}
               >
-                Track production, quality
-                distribution, and reserved stock.
+                Track production, quality distribution,
+                and reserved stock.
               </Text>
 
               {!!cocoons.imageUrl && (
@@ -1540,78 +1578,58 @@ export default function Inventory() {
                 />
               )}
 
+              {cocoonLowStock && (
+                <View
+                  style={
+                    styles.cocoonStockWarning
+                  }
+                >
+                  <Ionicons
+                    name="warning-outline"
+                    color="#A35D14"
+                    size={18}
+                  />
+
+                  <Text
+                    style={
+                      styles.cocoonStockWarningText
+                    }
+                  >
+                    Low cocoon stock:{" "}
+                    {fmt(availableCocoons)} good-quality
+                    cocoons available (limit{" "}
+                    {COCOON_LOW_STOCK_THRESHOLD}).
+                  </Text>
+                </View>
+              )}
+
               <View style={styles.metrics}>
-                <View style={styles.metric}>
-                  <Text style={S.muted}>
-                    Total Cocoons
-                  </Text>
-
-                  <Text
-                    style={styles.metricValue}
+                {[
+                  ["Total Cocoons", totalCocoons],
+                  ["Good Quality", cocoons.good],
+                  ["Minor Defects", cocoons.minor],
+                  ["Not Usable", cocoons.unusable],
+                  ["Reserved", cocoons.reserved],
+                  [
+                    "Available Good",
+                    availableCocoons,
+                  ],
+                ].map(([label, value]) => (
+                  <View
+                    key={String(label)}
+                    style={styles.metric}
                   >
-                    {fmt(totalCocoons)}
-                  </Text>
-                </View>
+                    <Text style={S.muted}>
+                      {label}
+                    </Text>
 
-                <View style={styles.metric}>
-                  <Text style={S.muted}>
-                    Good Quality
-                  </Text>
-
-                  <Text
-                    style={styles.metricValue}
-                  >
-                    {fmt(cocoons.good)}
-                  </Text>
-                </View>
-
-                <View style={styles.metric}>
-                  <Text style={S.muted}>
-                    Minor Defects
-                  </Text>
-
-                  <Text
-                    style={styles.metricValue}
-                  >
-                    {fmt(cocoons.minor)}
-                  </Text>
-                </View>
-
-                <View style={styles.metric}>
-                  <Text style={S.muted}>
-                    Not Usable
-                  </Text>
-
-                  <Text
-                    style={styles.metricValue}
-                  >
-                    {fmt(cocoons.unusable)}
-                  </Text>
-                </View>
-
-                <View style={styles.metric}>
-                  <Text style={S.muted}>
-                    Reserved
-                  </Text>
-
-                  <Text
-                    style={styles.metricValue}
-                  >
-                    {fmt(cocoons.reserved)}
-                  </Text>
-                </View>
-
-                <View style={styles.metric}>
-                  <Text style={S.muted}>
-                    Available Good
-                  </Text>
-
-                  <Text
-                    style={styles.metricValue}
-                  >
-                    {fmt(availableCocoons)}
-                  </Text>
-                </View>
+                    <Text
+                      style={styles.metricValue}
+                    >
+                      {fmt(Number(value))}
+                    </Text>
+                  </View>
+                ))}
               </View>
 
               <Text
@@ -1651,15 +1669,13 @@ export default function Inventory() {
                       styles.fullButtonText
                     }
                   >
-                    + Update Cocoons
+                    Edit Cocoon Quantities
                   </Text>
                 </Pressable>
 
                 <Pressable
                   onPress={editReserved}
-                  style={
-                    styles.outlineButton
-                  }
+                  style={styles.outlineButton}
                   disabled={busy}
                 >
                   <Text
@@ -1675,16 +1691,27 @@ export default function Inventory() {
           </Fade>
         )}
 
-        {/* =====================================
-            LOW STOCK ALERTS
-            ===================================== */}
-
-        {lowStock.length > 0 && (
+        {lowStockAlertCount > 0 && (
           <Fade delay={160}>
             <View style={S.card}>
               <Text style={S.sectionTitle}>
                 Needs Attention
               </Text>
+
+              {cocoonLowStock && (
+                <Text
+                  style={[
+                    S.muted,
+                    { marginTop: 9 },
+                  ]}
+                >
+                  Available good-quality cocoons:{" "}
+                  {fmt(availableCocoons)} left
+                  {" "}
+                  (threshold{" "}
+                  {fmt(COCOON_LOW_STOCK_THRESHOLD)})
+                </Text>
+              )}
 
               {lowStock.map(item => (
                 <Text
@@ -1705,9 +1732,7 @@ export default function Inventory() {
           </Fade>
         )}
 
-        {/* =====================================
-            RECENT ACTIVITY
-            ===================================== */}
+        {/* RECENT ACTIVITY */}
 
         <Fade delay={180}>
           <View style={S.card}>
@@ -1716,20 +1741,9 @@ export default function Inventory() {
             </Text>
 
             {activities.length ? (
-              activities.map(item => (
-                <View
-                  key={item.id}
-                  style={styles.activityRow}
-                >
-                  <Text style={S.strong}>
-                    {item.message}
-                  </Text>
-
-                  <Text style={S.muted}>
-                    {item.detail}
-                  </Text>
-                </View>
-              ))
+              activities
+                .slice(0, 2)
+                .map(renderActivity)
             ) : (
               <Text
                 style={[
@@ -1740,22 +1754,92 @@ export default function Inventory() {
                 No inventory activity yet.
               </Text>
             )}
+
+            {activities.length > 2 && (
+              <Pressable
+                onPress={() =>
+                  setShowAllActivity(true)
+                }
+                style={
+                  styles.activityViewAllButton
+                }
+                accessibilityRole="button"
+                accessibilityLabel="View all inventory activity"
+              >
+                <Text
+                  style={
+                    styles.activityViewAllText
+                  }
+                >
+                  View All
+                </Text>
+
+                <Ionicons
+                  name="arrow-forward"
+                  size={16}
+                  color="#FFFFFF"
+                />
+              </Pressable>
+            )}
           </View>
         </Fade>
       </ScrollView>
 
-      {/* =====================================
-          INVENTORY EDITOR MODAL
-          ===================================== */}
+      {/* ALL INVENTORY ACTIVITY MODAL */}
+
+      <Modal
+        visible={showAllActivity}
+        transparent
+        animationType="slide"
+        onRequestClose={() =>
+          setShowAllActivity(false)
+        }
+      >
+        <View style={styles.backdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHead}>
+              <Text style={S.sectionTitle}>
+                All Inventory Activity
+              </Text>
+
+              <Pressable
+                onPress={() =>
+                  setShowAllActivity(false)
+                }
+              >
+                <Ionicons
+                  name="close"
+                  size={23}
+                  color={C.dark}
+                />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              contentContainerStyle={{
+                paddingBottom: 16,
+              }}
+            >
+              {activities.length === 0 ? (
+                <Text style={S.muted}>
+                  No inventory activity yet.
+                </Text>
+              ) : (
+                activities.map(renderActivity)
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* INVENTORY EDITOR MODAL */}
 
       <Modal
         visible={editor !== null}
         transparent
         animationType="fade"
         onRequestClose={() => {
-          if (!busy) {
-            setEditor(null);
-          }
+          if (!busy) setEditor(null);
         }}
       >
         <View style={styles.backdrop}>
@@ -1793,10 +1877,6 @@ export default function Inventory() {
                 paddingBottom: 12,
               }}
             >
-              {/* =====================================
-                  SPECIES EDITOR
-                  ===================================== */}
-
               {editor === "species" && (
                 <>
                   <Field
@@ -1812,7 +1892,9 @@ export default function Inventory() {
 
                   <Field
                     label="Scientific Name / Description"
-                    value={form.scientificName}
+                    value={
+                      form.scientificName
+                    }
                     onChangeText={value =>
                       setForm(current => ({
                         ...current,
@@ -1919,10 +2001,6 @@ export default function Inventory() {
                 </>
               )}
 
-              {/* =====================================
-                  STOCK EDITOR
-                  ===================================== */}
-
               {editor === "stock" && (
                 <>
                   <Text
@@ -1948,10 +2026,6 @@ export default function Inventory() {
                 </>
               )}
 
-              {/* =====================================
-                  COCOON EDITOR
-                  ===================================== */}
-
               {editor === "cocoons" && (
                 <>
                   <Text
@@ -1962,15 +2036,13 @@ export default function Inventory() {
                       },
                     ]}
                   >
-                    Enter changes, not new totals.
-                    Use negative values to
-                    reduce a category.
+                    Edit the current total for each
+                    cocoon quality category. Enter
+                    the actual quantity available.
                   </Text>
 
                   <Field
-                    label={`Good Quality (current ${fmt(
-                      cocoons.good
-                    )})`}
+                    label="Good Quality — New Total"
                     value={goodChange}
                     onChangeText={
                       setGoodChange
@@ -1979,9 +2051,7 @@ export default function Inventory() {
                   />
 
                   <Field
-                    label={`Minor Defects (current ${fmt(
-                      cocoons.minor
-                    )})`}
+                    label="Minor Defects — New Total"
                     value={minorChange}
                     onChangeText={
                       setMinorChange
@@ -1990,10 +2060,10 @@ export default function Inventory() {
                   />
 
                   <Field
-                    label={`Not Usable (current ${fmt(
-                      cocoons.unusable
-                    )})`}
-                    value={unusableChange}
+                    label="Not Usable — New Total"
+                    value={
+                      unusableChange
+                    }
                     onChangeText={
                       setUnusableChange
                     }
@@ -2053,10 +2123,6 @@ export default function Inventory() {
                 </>
               )}
 
-              {/* =====================================
-                  RESERVED COCOONS
-                  ===================================== */}
-
               {editor === "reserved" && (
                 <>
                   <Text
@@ -2084,10 +2150,6 @@ export default function Inventory() {
                   />
                 </>
               )}
-
-              {/* =====================================
-                  MODAL ACTIONS
-                  ===================================== */}
 
               {busy && (
                 <ActivityIndicator
@@ -2161,6 +2223,193 @@ export default function Inventory() {
                 </Pressable>
               </View>
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* SMALL ERROR AND VALIDATION POPUP */}
+
+      <Modal
+        visible={notice !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() =>
+          setNotice(null)
+        }
+      >
+        <View
+          style={
+            styles.noticeBackdrop
+          }
+        >
+          <View
+            style={styles.noticeCard}
+          >
+            <View
+              style={styles.noticeIcon}
+            >
+              <Ionicons
+                name="alert-circle-outline"
+                size={22}
+                color="#B34D4D"
+              />
+            </View>
+
+            <Text
+              style={
+                styles.noticeTitle
+              }
+            >
+              {notice?.title}
+            </Text>
+
+            <Text
+              style={
+                styles.noticeMessage
+              }
+            >
+              {notice?.message}
+            </Text>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close notification"
+              onPress={() =>
+                setNotice(null)
+              }
+              style={
+                styles.noticeButton
+              }
+            >
+              <Text
+                style={
+                  styles.noticeButtonText
+                }
+              >
+                OK
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* DELETE INVENTORY ACTIVITY CONFIRMATION */}
+
+      <Modal
+        visible={activityToDelete !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!deletingActivity) {
+            setActivityToDelete(null);
+          }
+        }}
+      >
+        <View
+          style={
+            styles.noticeBackdrop
+          }
+        >
+          <View
+            style={
+              styles.activityConfirmCard
+            }
+          >
+            <View
+              style={
+                styles.noticeIcon
+              }
+            >
+              <Ionicons
+                name="trash-outline"
+                size={22}
+                color="#B34D4D"
+              />
+            </View>
+
+            <Text
+              style={
+                styles.noticeTitle
+              }
+            >
+              Delete Activity?
+            </Text>
+
+            <Text
+              style={
+                styles.noticeMessage
+              }
+            >
+              Permanently delete this activity
+              record from Firestore?
+            </Text>
+
+            <Text
+              style={
+                styles.activityConfirmDetail
+              }
+            >
+              {activityToDelete?.message}
+            </Text>
+
+            <Text
+              style={
+                styles.activityConfirmHint
+              }
+            >
+              Only this activity history entry
+              will be removed. Inventory stock
+              and other records will not change.
+            </Text>
+
+            <View
+              style={
+                styles.activityConfirmActions
+              }
+            >
+              <Pressable
+                disabled={deletingActivity}
+                style={
+                  styles.activityCancelButton
+                }
+                onPress={() =>
+                  setActivityToDelete(null)
+                }
+              >
+                <Text
+                  style={
+                    styles.activityCancelText
+                  }
+                >
+                  Cancel
+                </Text>
+              </Pressable>
+
+              <Pressable
+                disabled={deletingActivity}
+                style={
+                  styles.activityConfirmDeleteButton
+                }
+                onPress={() =>
+                  void deleteSelectedActivity()
+                }
+              >
+                {deletingActivity ? (
+                  <ActivityIndicator
+                    size="small"
+                    color="#FFFFFF"
+                  />
+                ) : (
+                  <Text
+                    style={
+                      styles.activityConfirmDeleteText
+                    }
+                  >
+                    Delete
+                  </Text>
+                )}
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
@@ -2329,6 +2578,25 @@ const styles = StyleSheet.create({
     gap: 9,
   },
 
+  cocoonStockWarning: {
+    flexDirection: "row",
+    gap: 9,
+    alignItems: "center",
+    backgroundColor: "#FFF4DC",
+    borderColor: "#ECD5A5",
+    borderWidth: 1,
+    borderRadius: 11,
+    padding: 12,
+    marginBottom: 14,
+  },
+
+  cocoonStockWarningText: {
+    flex: 1,
+    color: "#805416",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+
   fullButton: {
     backgroundColor: C.green,
     borderRadius: 11,
@@ -2351,10 +2619,47 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
 
+  // ACTIVITY ROW WITH RIGHT-SIDE DELETE ICON
+
   activityRow: {
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderColor: C.line,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+
+  activityInformation: {
+    flex: 1,
+  },
+
+  activityDeleteButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFF1ED",
+    borderWidth: 1,
+    borderColor: "#F1D6D0",
+  },
+
+  activityViewAllButton: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 14,
+    paddingVertical: 12,
+    backgroundColor: C.green,
+    borderRadius: 11,
+  },
+
+  activityViewAllText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "700",
   },
 
   errorCard: {
@@ -2452,5 +2757,133 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     gap: 10,
     marginTop: 17,
+  },
+
+  // SMALL ERROR POPUP
+
+  noticeBackdrop: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(8,24,15,0.42)",
+    padding: 20,
+  },
+
+  noticeCard: {
+    width: "100%",
+    maxWidth: 330,
+    backgroundColor: C.white,
+    borderRadius: 16,
+    padding: 20,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: C.line,
+  },
+
+  noticeIcon: {
+    backgroundColor: "#FFF1ED",
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+
+  noticeTitle: {
+    color: C.dark,
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 7,
+    textAlign: "center",
+  },
+
+  noticeMessage: {
+    color: C.muted,
+    fontSize: 12,
+    lineHeight: 19,
+    textAlign: "center",
+    marginBottom: 18,
+  },
+
+  noticeButton: {
+    backgroundColor: C.green,
+    borderRadius: 10,
+    alignItems: "center",
+    paddingHorizontal: 30,
+    paddingVertical: 11,
+    minWidth: 110,
+  },
+
+  noticeButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+
+  // ACTIVITY DELETE CONFIRMATION
+
+  activityConfirmCard: {
+    width: "100%",
+    maxWidth: 330,
+    backgroundColor: C.white,
+    borderRadius: 16,
+    padding: 20,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: C.line,
+  },
+
+  activityConfirmDetail: {
+    color: C.dark,
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+
+  activityConfirmHint: {
+    color: C.muted,
+    fontSize: 11,
+    lineHeight: 17,
+    textAlign: "center",
+    marginBottom: 18,
+  },
+
+  activityConfirmActions: {
+    width: "100%",
+    flexDirection: "row",
+    gap: 10,
+  },
+
+  activityCancelButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: C.line,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  activityCancelText: {
+    color: C.dark,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  activityConfirmDeleteButton: {
+    flex: 1,
+    backgroundColor: "#B34D4D",
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  activityConfirmDeleteText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "700",
   },
 });

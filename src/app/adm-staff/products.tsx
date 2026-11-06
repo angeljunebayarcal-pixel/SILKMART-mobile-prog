@@ -188,6 +188,22 @@ function lowStockThreshold(category: string) {
   return category === "Silkworms" ? 10 : 100;
 }
 
+type StockListEntry = {
+  id: string;
+  title: string;
+  detail: string;
+  quantity: number;
+  threshold: number;
+  unit: string;
+  kind: "product" | "variant" | "worm";
+};
+
+function stockLevel(quantity: number, threshold: number) {
+  if (quantity <= 0) return "Out of Stock";
+  if (quantity <= threshold) return "Low Stock";
+  return "In Stock";
+}
+
 function money(value: number) {
   return `₱${value.toLocaleString("en-PH", {
     minimumFractionDigits: 2,
@@ -280,6 +296,7 @@ type InventorySpecies = {
   name: string;
   scientificName: string;
   quantity: number;
+  threshold: number;
   imageUrl: string;
   stage: string;
 };
@@ -296,6 +313,7 @@ export default function Products() {
   const [products, setProducts] = useState<ShopProduct[]>([]);
   const [inventorySpecies, setInventorySpecies] = useState<InventorySpecies[]>([]);
   const [inventoryError, setInventoryError] = useState("");
+  const [inventoryReady, setInventoryReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -392,6 +410,7 @@ export default function Products() {
   // Read the SAME species collection used by Inventory Management.
   // Inventory remains the authoritative source for silkworm quantities.
   useEffect(() => {
+    setInventoryReady(false);
     if (!user) {
       setInventorySpecies([]);
       return;
@@ -407,15 +426,20 @@ export default function Products() {
             name: String(data.name ?? ""),
             scientificName: String(data.scientificName ?? ""),
             quantity: Number(data.quantity ?? 0),
+            threshold: Number.isFinite(Number(data.threshold))
+              ? Math.max(0, Number(data.threshold))
+              : 10,
             imageUrl: String(data.imageUrl ?? ""),
             stage: String(data.stage ?? ""),
           };
         }).sort((a, b) => a.name.localeCompare(b.name)));
         setInventoryError("");
+        setInventoryReady(true);
       },
       reason => {
         console.error("Silkworm inventory read failed:", reason);
         setInventoryError("Cannot read silkworm inventory. Check inventory permissions.");
+        setInventoryReady(true);
       }
     );
   }, [user?.uid]);
@@ -437,6 +461,96 @@ export default function Products() {
   }, [products, inventorySpecies]);
 
   // -------------------------------------
+  // LIVE PRODUCT, COLOR, AND WORM STOCK LISTS
+  // -------------------------------------
+  // Color variants are separate stock lines. Silkworm quantities and
+  // their configured thresholds come from inventory_species, not a
+  // potentially outdated product listing stock field.
+  const productStockList = useMemo<StockListEntry[]>(() => {
+    const speciesById = new Map(inventorySpecies.map(item => [item.id, item]));
+    const result: StockListEntry[] = [];
+
+    for (const product of visibleProducts) {
+      const linkedSpecies = product.inventorySpeciesId
+        ? speciesById.get(product.inventorySpeciesId)
+        : undefined;
+      const threshold = linkedSpecies
+        ? Math.max(0, linkedSpecies.threshold)
+        : lowStockThreshold(product.category);
+      const unit = stockUnit(product.category);
+
+      // Each color is independently tracked and checked for low stock.
+      if (supportsColors(product.category) && product.colorStocks.length > 0) {
+        for (const variant of product.colorStocks) {
+          result.push({
+            id: `product:${product.id}:color:${variant.name}`,
+            title: product.name,
+            detail: `${variant.name} variant`,
+            quantity: variant.quantity,
+            threshold,
+            unit,
+            kind: "variant",
+          });
+        }
+      } else {
+        result.push({
+          id: `product:${product.id}`,
+          title: product.name,
+          detail: linkedSpecies ? "Linked to silkworm inventory" : product.category,
+          quantity: product.stock,
+          threshold,
+          unit,
+          kind: "product",
+        });
+      }
+    }
+
+    return result.sort((a, b) => a.title.localeCompare(b.title) || a.detail.localeCompare(b.detail));
+  }, [visibleProducts, inventorySpecies]);
+
+  const wormStockList = useMemo<StockListEntry[]>(() =>
+    inventorySpecies.map(species => ({
+      id: `worm:${species.id}`,
+      title: species.name,
+      detail: species.stage || "Silkworm species",
+      quantity: species.quantity,
+      threshold: Math.max(0, species.threshold),
+      unit: "worms",
+      kind: "worm" as const,
+    })).sort((a, b) => a.title.localeCompare(b.title)),
+  [inventorySpecies]);
+
+  // Alert on low/out-of-stock items as snapshots change. Count each
+  // silkworm inventory record only once even if it has a shop listing.
+  const lowStockList = useMemo(() => {
+    
+    return [...productStockList.filter(entry => {
+      if (entry.kind !== "product") return true;
+      const productId = entry.id.replace(/^product:/, "");
+      const product = visibleProducts.find(p => p.id === productId);
+      return !product?.inventorySpeciesId;
+    }), ...wormStockList].filter(entry => entry.quantity <= entry.threshold)
+      .sort((a, b) => a.quantity - b.quantity || a.title.localeCompare(b.title));
+  }, [productStockList, wormStockList, visibleProducts]);
+
+  const [stockListMode, setStockListMode] = useState<"all" | "low">("all");
+  const [showAllStock, setShowAllStock] = useState(false);
+  const displayedProductStock = stockListMode === "low"
+    ? lowStockList.filter(item => item.kind !== "worm")
+    : productStockList;
+  const displayedWormStock = stockListMode === "low"
+    ? lowStockList.filter(item => item.kind === "worm")
+    : wormStockList;
+  const previewStock = useMemo(() => {
+    const entries = [...displayedProductStock, ...displayedWormStock];
+    return entries.sort((a, b) => {
+      const severity = (item: StockListEntry) =>
+        item.quantity <= 0 ? 0 : item.quantity <= item.threshold ? 1 : 2;
+      return severity(a) - severity(b) || a.title.localeCompare(b.title);
+    }).slice(0, 3);
+  }, [displayedProductStock, displayedWormStock]);
+
+  // -------------------------------------
   // PRODUCT STATISTICS
   // -------------------------------------
 
@@ -448,9 +562,10 @@ export default function Products() {
     product => !product.published
   ).length;
 
-  const outOfStockCount = visibleProducts.filter(
-    product => product.stock <= 0
-  ).length;
+  // Count each low/out-of-stock product variant, unlinked product,
+  // and silkworm species once, using the live stock list above.
+  // Linked silkworm product listings are not counted twice.
+  const lowStockCount = lowStockList.length;
 
   // -------------------------------------
   // FILTER AND SORT
@@ -491,11 +606,17 @@ export default function Products() {
         if (stockFilter === "In Stock") {
           matchesStock = product.stock > 0;
         } else if (stockFilter === "Low Stock") {
+          const species = inventorySpecies.find(
+            item => item.id === product.inventorySpeciesId
+          );
+          const threshold = species
+            ? Math.max(0, species.threshold)
+            : lowStockThreshold(product.category);
+          const variantLow = product.colorStocks.some(
+            color => color.quantity <= threshold
+          );
           matchesStock =
-            product.stock > 0 &&
-            product.stock <= lowStockThreshold(
-              product.category
-            );
+            (product.stock <= threshold) || variantLow;
         } else if (stockFilter === "Out of Stock") {
           matchesStock = product.stock <= 0;
         }
@@ -532,6 +653,7 @@ export default function Products() {
       });
   }, [
     visibleProducts,
+    inventorySpecies,
     search,
     category,
     statusFilter,
@@ -1096,8 +1218,8 @@ export default function Products() {
             />
             <Stat
               icon="alert-circle-outline"
-              label="Out of Stock"
-              value={outOfStockCount}
+              label="Low Stock"
+              value={lowStockCount}
             />
           </View>
         </Fade>
@@ -1122,6 +1244,39 @@ export default function Products() {
             />
           </Pressable>
         ) : null}
+
+        {/* LIVE LOW-STOCK ALERT FOR ADMIN/STAFF */}
+        {!loading && inventoryReady && !inventoryError && lowStockList.length > 0 && (
+          <View style={styles.lowStockAlert}>
+            <Ionicons name="notifications-outline" size={22} color="#A35D14" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.lowStockAlertTitle}>
+                Stock Alert · {lowStockList.length} item{lowStockList.length === 1 ? "" : "s"} need attention
+              </Text>
+              <Text style={styles.lowStockAlertHelp}>
+                Automatically updated from Firestore. Items at or below their threshold appear under Low Stock.
+              </Text>
+              {lowStockList.slice(0, 4).map(item => (
+                <Text key={item.id} style={styles.lowStockAlertItem}>
+                  • {item.title}{item.kind === "variant" ? ` (${item.detail})` : ""}: {item.quantity} {item.unit} (limit {item.threshold})
+                </Text>
+              ))}
+              {lowStockList.length > 4 && (
+                <Text style={styles.lowStockAlertHelp}>+ {lowStockList.length - 4} more in Low Stock</Text>
+              )}
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="View low stock inventory"
+              onPress={() => {
+                setStockListMode("low");
+                setShowAllStock(true);
+              }}
+            >
+              <Ionicons name="arrow-forward-circle-outline" size={24} color="#A35D14" />
+            </Pressable>
+          </View>
+        )}
 
         <Fade delay={180}>
           <View style={S.card}>
@@ -1397,7 +1552,171 @@ export default function Products() {
             )}
           </View>
         </Fade>
+
+        {/* LIVE STOCK LIST: PRODUCT VARIANTS + SILKWORM SPECIES */}
+        <Fade delay={150}>
+          <View style={S.card}>
+            <View style={styles.sectionHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={S.sectionTitle}>Stock List & Low Stock</Text>
+                <Text style={S.muted}>
+                  Live stock by product, color variant, and silkworm species.
+                </Text>
+              </View>
+              <Ionicons name="layers-outline" size={23} color={C.green} />
+            </View>
+
+            <View style={styles.stockModeRow}>
+              <Pressable
+                onPress={() => setStockListMode("all")}
+                style={[styles.stockModeButton, stockListMode === "all" && styles.stockModeActive]}
+              >
+                <Text style={[styles.stockModeText, stockListMode === "all" && styles.stockModeTextActive]}>
+                  All Stock ({productStockList.length + wormStockList.length})
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setStockListMode("low")}
+                style={[styles.stockModeButton, stockListMode === "low" && styles.stockModeActive]}
+              >
+                <Text style={[styles.stockModeText, stockListMode === "low" && styles.stockModeTextActive]}>
+                  Low Stock ({lowStockList.length})
+                </Text>
+              </Pressable>
+            </View>
+
+            {!inventoryReady && <ActivityIndicator color={C.green} style={{ marginBottom: 12 }} />}
+            <Text style={styles.stockListHeading}>STOCK OVERVIEW · MAXIMUM 3 ITEMS</Text>
+            {inventoryError ? <Text style={styles.errorText}>{inventoryError}</Text> : null}
+            {previewStock.length === 0 ? (
+              <Text style={S.muted}>No {stockListMode === "low" ? "low-stock" : "stock"} items to display.</Text>
+            ) : previewStock.map(entry => (
+              <View key={entry.id} style={styles.stockListRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.stockListTitle}>{entry.title}</Text>
+                  <Text style={S.muted}>{entry.kind === "worm" ? "Silkworm · " : ""}{entry.detail}</Text>
+                </View>
+                <View style={{ alignItems: "flex-end" }}>
+                  <Text style={styles.stockListQuantity}>
+                    {entry.quantity.toLocaleString()} {entry.unit}
+                  </Text>
+                  <Text style={[
+                    styles.stockListStatus,
+                    entry.quantity <= entry.threshold && { color: entry.quantity <= 0 ? "#B34D4D" : "#A35D14" },
+                  ]}>
+                    {stockLevel(entry.quantity, entry.threshold)} · Limit {entry.threshold}
+                  </Text>
+                </View>
+              </View>
+            ))}
+            <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="View all stock records"
+                onPress={() => setShowAllStock(true)}
+                style={styles.viewAllStockButton}
+              >
+                <Text style={styles.viewAllStockText}>View All</Text>
+                <Ionicons name="arrow-forward" size={17} color="#FFFFFF" />
+              </Pressable>
+            <Text style={[S.muted, { marginTop: 15 }]}>
+              Silkworm thresholds are set in Inventory Management. Other product and color thresholds currently use 100 pcs.
+            </Text>
+          </View>
+        </Fade>
+
       </ScrollView>
+
+      {/* VIEW ALL STOCK LIST MODAL */}
+      <Modal
+        visible={showAllStock}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowAllStock(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={S.eyebrow}>LIVE INVENTORY</Text>
+                <Text style={styles.modalTitle}>Stock List & Low Stock</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close stock list"
+                onPress={() => setShowAllStock(false)}
+              >
+                <Ionicons name="close" size={24} color={C.dark} />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.allStockModalContent}>
+              <View style={styles.stockModeRow}>
+                <Pressable
+                  onPress={() => setStockListMode("all")}
+                  style={[styles.stockModeButton, stockListMode === "all" && styles.stockModeActive]}
+                >
+                  <Text style={[styles.stockModeText, stockListMode === "all" && styles.stockModeTextActive]}>
+                    All Stock ({productStockList.length + wormStockList.length})
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setStockListMode("low")}
+                  style={[styles.stockModeButton, stockListMode === "low" && styles.stockModeActive]}
+                >
+                  <Text style={[styles.stockModeText, stockListMode === "low" && styles.stockModeTextActive]}>
+                    Low Stock ({lowStockList.length})
+                  </Text>
+                </Pressable>
+              </View>
+              <Text style={styles.stockListHeading}>PRODUCT STOCK (INCLUDING COLORS)</Text>
+              {displayedProductStock.length === 0 ? (
+                <Text style={S.muted}>No products to display.</Text>
+              ) : displayedProductStock.map(entry => (
+                <View key={entry.id} style={styles.stockListRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.stockListTitle}>{entry.title}</Text>
+                    <Text style={S.muted}>{entry.detail}</Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={styles.stockListQuantity}>
+                      {entry.quantity.toLocaleString()} {entry.unit}
+                    </Text>
+                    <Text style={[
+                      styles.stockListStatus,
+                      entry.quantity <= entry.threshold && { color: entry.quantity <= 0 ? "#B34D4D" : "#A35D14" },
+                    ]}>
+                      {stockLevel(entry.quantity, entry.threshold)} · Limit {entry.threshold}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+              <Text style={[styles.stockListHeading, { marginTop: 18 }]}>SILKWORM INVENTORY STOCK</Text>
+              {inventoryError ? (
+                <Text style={styles.errorText}>{inventoryError}</Text>
+              ) : displayedWormStock.length === 0 ? (
+                <Text style={S.muted}>No silkworms to display.</Text>
+              ) : displayedWormStock.map(entry => (
+                <View key={entry.id} style={styles.stockListRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.stockListTitle}>{entry.title}</Text>
+                    <Text style={S.muted}>{entry.detail}</Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={styles.stockListQuantity}>
+                      {entry.quantity.toLocaleString()} worms
+                    </Text>
+                    <Text style={[
+                      styles.stockListStatus,
+                      entry.quantity <= entry.threshold && { color: entry.quantity <= 0 ? "#B34D4D" : "#A35D14" },
+                    ]}>
+                      {stockLevel(entry.quantity, entry.threshold)} · Limit {entry.threshold}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {/* ADD / EDIT PRODUCT MODAL */}
 
@@ -2259,6 +2578,111 @@ function DetailRow({
 // -------------------------------------
 
 const styles = StyleSheet.create({
+  lowStockAlert: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: 15,
+    borderWidth: 1,
+    borderColor: "#E9CE9B",
+    borderRadius: 14,
+    backgroundColor: "#FFF5DE",
+    marginBottom: 16,
+  },
+  lowStockAlertTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#865014",
+  },
+  lowStockAlertHelp: {
+    fontSize: 11,
+    lineHeight: 17,
+    color: "#855D30",
+    marginTop: 4,
+  },
+  lowStockAlertItem: {
+    fontSize: 11,
+    lineHeight: 18,
+    color: "#865014",
+    marginTop: 3,
+  },
+  viewAllStockButton: {
+    alignSelf: "flex-end",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: C.green,
+    borderRadius: 11,
+    paddingVertical: 11,
+    paddingHorizontal: 17,
+    marginTop: 16,
+  },
+  viewAllStockText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  allStockModalContent: {
+    padding: 20,
+    paddingBottom: 38,
+  },
+
+  stockModeRow: {
+    flexDirection: "row",
+    gap: 9,
+    marginBottom: 18,
+  },
+  stockModeButton: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: C.line,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    backgroundColor: "#FFFFFF",
+  },
+  stockModeActive: {
+    borderColor: C.green,
+    backgroundColor: C.green,
+  },
+  stockModeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: C.dark,
+  },
+  stockModeTextActive: {
+    color: "#FFFFFF",
+  },
+  stockListHeading: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: C.green,
+    letterSpacing: 1,
+    marginBottom: 7,
+  },
+  stockListRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 13,
+    borderBottomColor: C.line,
+    borderBottomWidth: 1,
+  },
+  stockListTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: C.dark,
+    marginBottom: 3,
+  },
+  stockListQuantity: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: C.dark,
+  },
+  stockListStatus: {
+    fontSize: 10,
+    color: C.green,
+    marginTop: 4,
+  },
   statsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",

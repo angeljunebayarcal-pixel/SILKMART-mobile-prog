@@ -1,25 +1,15 @@
 
-import {
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-
-import {
-  onAuthStateChanged,
-} from "firebase/auth";
-
+import { useEffect, useMemo, useState } from "react";
+import { onAuthStateChanged } from "firebase/auth";
 import {
   collection,
+  doc,
   onSnapshot,
   query,
   where,
 } from "firebase/firestore";
 
-import {
-  auth,
-  db,
-} from "../firebase/config";
+import { auth, db } from "../firebase/config";
 
 import {
   useFirestoreNotificationRecords,
@@ -41,6 +31,8 @@ import {
 
 type Audience = "customer" | "staff";
 
+type StockRow = Record<string, any>;
+
 type OrderForNotifications = {
   id: string;
   status: string;
@@ -55,7 +47,13 @@ type OrderForNotifications = {
 };
 
 // =====================================
-// TIMESTAMP CONVERSION
+// CONSTANTS
+// =====================================
+
+const COCOON_LOW_STOCK_THRESHOLD = 100;
+
+// =====================================
+// HELPERS
 // =====================================
 
 function toMillis(value: unknown): number {
@@ -65,30 +63,20 @@ function toMillis(value: unknown): number {
 
   if (typeof value === "string") {
     const parsed = Date.parse(value);
-
-    return Number.isFinite(parsed)
-      ? parsed
-      : 0;
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 
-  if (
-    value &&
-    typeof value === "object"
-  ) {
+  if (value && typeof value === "object") {
     const item = value as {
       toMillis?: () => number;
       seconds?: number;
     };
 
-    if (
-      typeof item.toMillis === "function"
-    ) {
+    if (typeof item.toMillis === "function") {
       return item.toMillis();
     }
 
-    if (
-      typeof item.seconds === "number"
-    ) {
+    if (typeof item.seconds === "number") {
       return item.seconds * 1000;
     }
   }
@@ -96,26 +84,17 @@ function toMillis(value: unknown): number {
   return 0;
 }
 
-// =====================================
-// SHARED CHANGE LISTENERS
-// =====================================
-
-// Keep this exported function for compatibility
-// with existing notification screens.
-//
-// Firestore listeners automatically update
-// read and unread counts when saved data changes.
+// Keep this export compatible with the
+// existing notification screens.
 
 const listeners = new Set<() => void>();
 
 export function notifySilkMartReadStateChanged(): void {
-  listeners.forEach(listener => {
-    listener();
-  });
+  listeners.forEach(listener => listener());
 }
 
 // =====================================
-// GENERATE NOTIFICATION IDS
+// ORDER NOTIFICATION IDS
 // =====================================
 
 function notificationIds(
@@ -125,25 +104,14 @@ function notificationIds(
     `placed:${order.id}`,
   ];
 
-  // ORDER CONFIRMED
-
   if (order.status === "Confirmed") {
-    ids.push(
-      `confirmed:${order.id}`
-    );
+    ids.push(`confirmed:${order.id}`);
   }
-
-  // ORDER REJECTED
 
   if (order.status === "Rejected") {
-    ids.push(
-      `rejected:${order.id}`
-    );
-
+    ids.push(`rejected:${order.id}`);
     return ids;
   }
-
-  // DELIVERY SCHEDULED
 
   if (
     order.confirmedDeliveryDate &&
@@ -154,8 +122,6 @@ function notificationIds(
     );
   }
 
-  // PREPARING
-
   if (
     [
       "Preparing",
@@ -163,12 +129,8 @@ function notificationIds(
       "Delivered",
     ].includes(order.deliveryStatus)
   ) {
-    ids.push(
-      `preparing:${order.id}`
-    );
+    ids.push(`preparing:${order.id}`);
   }
-
-  // OUT FOR DELIVERY
 
   if (
     [
@@ -176,33 +138,193 @@ function notificationIds(
       "Delivered",
     ].includes(order.deliveryStatus)
   ) {
-    ids.push(
-      `dispatched:${order.id}`
-    );
+    ids.push(`dispatched:${order.id}`);
   }
 
-  // DELIVERED
-
-  if (
-    order.deliveryStatus === "Delivered"
-  ) {
-    ids.push(
-      `delivered:${order.id}`
-    );
+  if (order.deliveryStatus === "Delivered") {
+    ids.push(`delivered:${order.id}`);
   }
 
   return ids;
 }
 
 // =====================================
-// SHARED NOTIFICATION COUNTS
+// STOCK NOTIFICATION IDS
+// =====================================
+
+// The notification IDs must match
+// notif-adm-staff.tsx exactly.
+//
+// Includes:
+// 1. Silkworm species
+// 2. Product stock
+// 3. Individual color variants
+// 4. Available good-quality cocoons
+
+function lowStockEventIds(
+  products: StockRow[],
+  species: StockRow[],
+  cocoons: StockRow | null
+): string[] {
+  const ids: string[] = [];
+
+  const speciesIds = new Set(
+    species.map(item => String(item.id))
+  );
+
+  function add(
+    key: string,
+    quantity: number,
+    threshold: number,
+    updatedAt: unknown
+  ) {
+    if (
+      !Number.isFinite(quantity) ||
+      !Number.isFinite(threshold) ||
+      quantity > threshold
+    ) {
+      return;
+    }
+
+    const timestamp = toMillis(updatedAt);
+
+    ids.push(
+      `lowstock:${key}:${timestamp || Math.floor(quantity)}`
+    );
+  }
+
+  // =====================================
+  // SILKWORM STOCK
+  // =====================================
+
+  for (const item of species) {
+    add(
+      `worm:${item.id}`,
+      Number(item.quantity ?? 0),
+      Math.max(
+        0,
+        Number(item.threshold ?? 0)
+      ),
+      item.updatedAt
+    );
+  }
+
+  // =====================================
+  // PRODUCT AND COLOR-VARIANT STOCK
+  // =====================================
+
+  for (const item of products) {
+    const category = String(
+      item.category ?? ""
+    );
+
+    const speciesId = String(
+      item.inventorySpeciesId ?? ""
+    );
+
+    // Prevent duplicate alerts for
+    // silkworms linked to Inventory.
+
+    if (
+      category === "Silkworms" &&
+      speciesId &&
+      speciesIds.has(speciesId)
+    ) {
+      continue;
+    }
+
+    const threshold =
+      category === "Silkworms" ? 10 : 100;
+
+    const colors = Array.isArray(item.colorStocks)
+      ? item.colorStocks
+      : [];
+
+    if (
+      category !== "Silkworms" &&
+      category !== "Cocoons" &&
+      colors.length > 0
+    ) {
+      for (const color of colors) {
+        if (
+          !color ||
+          typeof color.name !== "string"
+        ) {
+          continue;
+        }
+
+        add(
+          `product:${item.id}:color:${color.name}`,
+          Number(color.quantity ?? 0),
+          threshold,
+          item.updatedAt
+        );
+      }
+    } else {
+      add(
+        `product:${item.id}`,
+        Number(item.stock ?? 0),
+        threshold,
+        item.updatedAt
+      );
+    }
+  }
+
+  // =====================================
+  // COCOON INVENTORY LOW-STOCK ALERT
+  // =====================================
+
+  // Firestore document:
+  // inventory/cocoons
+  //
+  // Available = Good Quality - Reserved
+  //
+  // The alert appears when available
+  // stock reaches 100 or fewer.
+  //
+  // This uses the same notification ID
+  // as the Admin/Staff Notifications page.
+
+  if (cocoons) {
+    const good = Number(
+      cocoons.good ?? 0
+    );
+
+    const reserved = Number(
+      cocoons.reserved ?? 0
+    );
+
+    const validCocoonStock =
+      Number.isSafeInteger(good) &&
+      Number.isSafeInteger(reserved) &&
+      good >= 0 &&
+      reserved >= 0 &&
+      reserved <= good;
+
+    if (validCocoonStock) {
+      const available = good - reserved;
+
+      add(
+        "cocoon:available",
+        available,
+        COCOON_LOW_STOCK_THRESHOLD,
+        cocoons.updatedAt
+      );
+    }
+  }
+
+  return [...new Set(ids)];
+}
+
+// =====================================
+// SHARED NOTIFICATION COUNTS HOOK
 // =====================================
 
 export function useNotificationCounts(
   audience: Audience
 ) {
   // =====================================
-  // AUTHENTICATED USER
+  // AUTHENTICATION
   // =====================================
 
   const [uid, setUid] = useState(
@@ -210,29 +332,48 @@ export function useNotificationCounts(
   );
 
   // =====================================
-  // ORDER STATE
+  // ORDER AND CHAT STATES
   // =====================================
 
   const [orders, setOrders] = useState<
     OrderForNotifications[]
   >([]);
 
-  // =====================================
-  // CHAT STATE
-  // =====================================
-
   const [chats, setChats] = useState<
     Record<string, OrderChatMessage[]>
   >({});
-
-  // =====================================
-  // LOADING AND ERRORS
-  // =====================================
 
   const [ordersReady, setOrdersReady] =
     useState(false);
 
   const [hasError, setHasError] =
+    useState(false);
+
+  // =====================================
+  // STOCK STATES
+  // =====================================
+
+  const [stockProducts, setStockProducts] =
+    useState<StockRow[]>([]);
+
+  const [stockSpecies, setStockSpecies] =
+    useState<StockRow[]>([]);
+
+  // New: Cocoon inventory
+
+  const [stockCocoons, setStockCocoons] =
+    useState<StockRow | null>(null);
+
+  const [deletedStockIds, setDeletedStockIds] =
+    useState<Set<string>>(new Set());
+
+  const [stockReady, setStockReady] =
+    useState(false);
+
+  const [deletionsReady, setDeletionsReady] =
+    useState(false);
+
+  const [stockError, setStockError] =
     useState(false);
 
   // =====================================
@@ -243,41 +384,37 @@ export function useNotificationCounts(
     return onAuthStateChanged(
       auth,
       user => {
-        setUid(
-          user?.uid ?? ""
-        );
+        setUid(user?.uid ?? "");
 
         setOrders([]);
         setChats({});
+
         setOrdersReady(false);
         setHasError(false);
+
+        setStockProducts([]);
+        setStockSpecies([]);
+        setStockCocoons(null);
+
+        setDeletedStockIds(new Set());
+
+        setStockReady(false);
+        setDeletionsReady(false);
+        setStockError(false);
       }
     );
   }, []);
 
   // =====================================
-  // FIRESTORE NOTIFICATION PREFERENCES
+  // NOTIFICATION READ PREFERENCES
   // =====================================
 
-  // Both customer and staff now use
-  // the same permanent Firestore storage.
-  //
-  // Customers:
-  // notificationPreferences/{uid}
-  //   /audiences/customer
-  //
-  // Admin/Staff:
-  // notificationPreferences/{uid}
-  //   /audiences/staff
+  const preferences = useNotificationPreferences(
+    uid,
+    audience
+  );
 
-  const preferences =
-    useNotificationPreferences(
-      uid,
-      audience
-    );
-
-  const readState =
-    preferences.readState;
+  const readState = preferences.readState;
 
   const seenMessages =
     preferences.seenMessages;
@@ -287,7 +424,7 @@ export function useNotificationCounts(
     !preferences.error;
 
   // =====================================
-  // REAL-TIME ORDER LISTENER
+  // REAL-TIME ORDERS
   // =====================================
 
   useEffect(() => {
@@ -300,24 +437,16 @@ export function useNotificationCounts(
       return;
     }
 
-    const ordersCollection =
-      collection(
-        db,
-        "orders"
-      );
-
-    // Customers can access their own orders.
-    // Staff/Admin can access all orders.
+    const ordersCollection = collection(
+      db,
+      "orders"
+    );
 
     const ordersQuery =
       audience === "customer"
         ? query(
             ordersCollection,
-            where(
-              "customerUid",
-              "==",
-              uid
-            )
+            where("customerUid", "==", uid)
           )
         : ordersCollection;
 
@@ -325,14 +454,10 @@ export function useNotificationCounts(
 
     const unsubscribe = onSnapshot(
       ordersQuery,
-
       snapshot => {
-        if (!active) {
-          return;
-        }
+        if (!active) return;
 
-        const records:
-          OrderForNotifications[] =
+        const records: OrderForNotifications[] =
           snapshot.docs.map(record => {
             const data = record.data();
 
@@ -347,11 +472,9 @@ export function useNotificationCounts(
                 data.deliveryStatus ?? "Pending"
               ),
 
-              confirmedDeliveryDate:
-                String(
-                  data.confirmedDeliveryDate ??
-                    ""
-                ),
+              confirmedDeliveryDate: String(
+                data.confirmedDeliveryDate ?? ""
+              ),
 
               createdAt: toMillis(
                 data.createdAt
@@ -383,11 +506,8 @@ export function useNotificationCounts(
         setHasError(false);
         setOrdersReady(true);
       },
-
       error => {
-        if (!active) {
-          return;
-        }
+        if (!active) return;
 
         console.warn(
           "Unable to load notification orders:",
@@ -404,10 +524,7 @@ export function useNotificationCounts(
       active = false;
       unsubscribe();
     };
-  }, [
-    uid,
-    audience,
-  ]);
+  }, [uid, audience]);
 
   // =====================================
   // ORDER IDS
@@ -423,70 +540,297 @@ export function useNotificationCounts(
   );
 
   // =====================================
-  // REAL-TIME CHAT LISTENERS
+  // REAL-TIME ORDER CHATS
   // =====================================
 
   useEffect(() => {
     setChats({});
 
-    if (
-      !uid ||
-      !orderIdsKey
-    ) {
+    if (!uid || !orderIdsKey) {
       return;
     }
 
     let active = true;
 
-    const unsubscribers =
-      orderIdsKey
-        .split("|")
-        .map(orderId =>
-          subscribeToOrderChat(
-            orderId,
+    const unsubscribers = orderIdsKey
+      .split("|")
+      .map(orderId =>
+        subscribeToOrderChat(
+          orderId,
+          messages => {
+            if (!active) return;
 
-            messages => {
-              if (!active) {
-                return;
-              }
+            setChats(current => ({
+              ...current,
+              [orderId]: messages,
+            }));
+          },
+          error => {
+            if (!active) return;
 
-              setChats(current => ({
-                ...current,
-                [orderId]: messages,
-              }));
-            },
+            console.warn(
+              `Unable to load chat for order ${orderId}:`,
+              error
+            );
 
-            error => {
-              if (!active) {
-                return;
-              }
-
-              console.warn(
-                `Unable to load chat for order ${orderId}:`,
-                error
-              );
-
-              setHasError(true);
-            }
-          )
-        );
+            setHasError(true);
+          }
+        )
+      );
 
     return () => {
       active = false;
 
-      unsubscribers.forEach(
-        unsubscribe => {
-          unsubscribe();
-        }
-      );
+      unsubscribers.forEach(unsubscribe => {
+        unsubscribe();
+      });
     };
-  }, [
-    uid,
-    orderIdsKey,
-  ]);
+  }, [uid, orderIdsKey]);
 
   // =====================================
-  // BUILD NOTIFICATION EVENTS
+  // REAL-TIME STOCK LISTENERS
+  // =====================================
+
+  useEffect(() => {
+    setStockProducts([]);
+    setStockSpecies([]);
+    setStockCocoons(null);
+
+    setDeletedStockIds(new Set());
+
+    setStockReady(false);
+    setDeletionsReady(false);
+    setStockError(false);
+
+    // Customer accounts must not
+    // subscribe to staff inventory.
+
+    if (audience !== "staff" || !uid) {
+      return;
+    }
+
+    let active = true;
+
+    let productsLoaded = false;
+    let speciesLoaded = false;
+    let cocoonsLoaded = false;
+
+    // Wait for all three inventory
+    // sources before showing counts.
+
+    function setReadyIfLoaded() {
+      if (
+        active &&
+        productsLoaded &&
+        speciesLoaded &&
+        cocoonsLoaded
+      ) {
+        setStockReady(true);
+      }
+    }
+
+    // =====================================
+    // PRODUCT STOCK
+    // =====================================
+
+    const stopProducts = onSnapshot(
+      collection(db, "products"),
+      snapshot => {
+        if (!active) return;
+
+        setStockProducts(
+          snapshot.docs.map(item => ({
+            ...item.data(),
+            id: item.id,
+          }))
+        );
+
+        productsLoaded = true;
+        setReadyIfLoaded();
+      },
+      reason => {
+        if (!active) return;
+
+        console.warn(
+          "Unable to read product stock notifications:",
+          reason
+        );
+
+        setStockError(true);
+        productsLoaded = true;
+        setReadyIfLoaded();
+      }
+    );
+
+    // =====================================
+    // SILKWORM INVENTORY
+    // =====================================
+
+    const stopSpecies = onSnapshot(
+      collection(db, "inventory_species"),
+      snapshot => {
+        if (!active) return;
+
+        setStockSpecies(
+          snapshot.docs.map(item => ({
+            ...item.data(),
+            id: item.id,
+          }))
+        );
+
+        speciesLoaded = true;
+        setReadyIfLoaded();
+      },
+      reason => {
+        if (!active) return;
+
+        console.warn(
+          "Unable to read silkworm stock notifications:",
+          reason
+        );
+
+        setStockError(true);
+        speciesLoaded = true;
+        setReadyIfLoaded();
+      }
+    );
+
+    // =====================================
+    // COCOON INVENTORY
+    // =====================================
+
+    // Read the same Firestore document
+    // used by Inventory Management.
+
+    const stopCocoons = onSnapshot(
+      doc(db, "inventory", "cocoons"),
+      snapshot => {
+        if (!active) return;
+
+        if (snapshot.exists()) {
+          setStockCocoons(
+            snapshot.data()
+          );
+        } else {
+          setStockCocoons(null);
+        }
+
+        cocoonsLoaded = true;
+        setReadyIfLoaded();
+      },
+      reason => {
+        if (!active) return;
+
+        console.warn(
+          "Unable to read cocoon stock notifications:",
+          reason
+        );
+
+        setStockError(true);
+        cocoonsLoaded = true;
+        setReadyIfLoaded();
+      }
+    );
+
+    // =====================================
+    // DELETED STOCK NOTIFICATIONS
+    // =====================================
+
+    // Read deletion markers so a
+    // dismissed cocoon alert does not
+    // continue increasing the badge.
+
+    const stopDeleted = onSnapshot(
+      collection(
+        db,
+        "notificationRecords",
+        uid,
+        "deleted"
+      ),
+      snapshot => {
+        if (!active) return;
+
+        const deleted = new Set<string>();
+
+        snapshot.docs.forEach(item => {
+          const data = item.data();
+
+          if (
+            data.audience === "staff" &&
+            typeof data.id === "string" &&
+            data.id.startsWith("lowstock:")
+          ) {
+            deleted.add(data.id);
+          }
+        });
+
+        setDeletedStockIds(deleted);
+        setDeletionsReady(true);
+      },
+      reason => {
+        if (!active) return;
+
+        console.warn(
+          "Unable to read deleted stock alerts:",
+          reason
+        );
+
+        setStockError(true);
+        setDeletionsReady(true);
+      }
+    );
+
+    return () => {
+      active = false;
+
+      stopProducts();
+      stopSpecies();
+      stopCocoons();
+      stopDeleted();
+    };
+  }, [uid, audience]);
+
+  // =====================================
+  // BUILD STOCK NOTIFICATION IDS
+  // =====================================
+
+  const stockEventIds = useMemo(
+    () =>
+      audience === "staff"
+        ? lowStockEventIds(
+            stockProducts,
+            stockSpecies,
+            stockCocoons
+          )
+        : [],
+    [
+      audience,
+      stockProducts,
+      stockSpecies,
+      stockCocoons,
+    ]
+  );
+
+  // =====================================
+  // COUNT UNREAD STOCK NOTIFICATIONS
+  // =====================================
+
+  const unreadStock = useMemo(
+    () =>
+      stockEventIds.filter(
+        id =>
+          !deletedStockIds.has(id) &&
+          !readState[id]
+      ).length,
+    [
+      stockEventIds,
+      deletedStockIds,
+      readState,
+    ]
+  );
+
+  // =====================================
+  // BUILD ORDER NOTIFICATION EVENTS
   // =====================================
 
   const notificationEvents = useMemo<
@@ -495,43 +839,34 @@ export function useNotificationCounts(
     () =>
       orders.flatMap(order =>
         notificationIds(order).map(id => {
-          let timestamp =
-            order.createdAt;
+          let timestamp = order.createdAt;
 
-          if (
-            id.startsWith("delivered:")
-          ) {
-            timestamp =
-              order.deliveredAt;
+          if (id.startsWith("delivered:")) {
+            timestamp = order.deliveredAt;
           } else if (
             id.startsWith("dispatched:")
           ) {
-            timestamp =
-              order.dispatchedAt;
+            timestamp = order.dispatchedAt;
           } else if (
             id.startsWith("preparing:")
           ) {
-            timestamp =
-              order.preparingAt;
+            timestamp = order.preparingAt;
           } else if (
             id.startsWith("scheduled:")
           ) {
-            timestamp =
-              order.scheduledAt;
+            timestamp = order.scheduledAt;
           } else if (
             id.startsWith("confirmed:") ||
             id.startsWith("rejected:")
           ) {
-            timestamp =
-              order.decisionAt;
+            timestamp = order.decisionAt;
           }
 
           return {
             id,
             orderId: order.id,
             timestamp:
-              timestamp ||
-              order.createdAt,
+              timestamp || order.createdAt,
           };
         })
       ),
@@ -541,9 +876,6 @@ export function useNotificationCounts(
   // =====================================
   // FIRESTORE NOTIFICATION RECORDS
   // =====================================
-
-  // Retains permanent notification deletion
-  // markers from your existing system.
 
   const {
     visible: savedNotifications,
@@ -564,7 +896,6 @@ export function useNotificationCounts(
       savedNotifications.filter(
         item => !readState[item.id]
       ).length,
-
     [
       savedNotifications,
       readState,
@@ -577,9 +908,6 @@ export function useNotificationCounts(
 
   const unreadChats = useMemo(() => {
     let total = 0;
-
-    // Staff receives customer messages.
-    // Customers receive staff messages.
 
     const incomingRole =
       audience === "staff"
@@ -596,8 +924,7 @@ export function useNotificationCounts(
 
       for (const message of messages) {
         if (
-          message.senderRole ===
-            incomingRole &&
+          message.senderRole === incomingRole &&
           message.senderUid !== uid &&
           !seen.has(message.id)
         ) {
@@ -616,40 +943,52 @@ export function useNotificationCounts(
   ]);
 
   // =====================================
-  // LOADING STATE
+  // READY STATE
   // =====================================
 
   const ready =
     ordersReady &&
     preferencesReady &&
-    notificationRecordsReady;
+    notificationRecordsReady &&
+    (
+      audience !== "staff" ||
+      (stockReady && deletionsReady)
+    );
 
   // =====================================
-  // RETURN COUNTS
+  // FINAL NOTIFICATION COUNTS
   // =====================================
+
+  const totalUnread =
+    unreadOrders +
+    unreadChats +
+    (
+      audience === "staff"
+        ? unreadStock
+        : 0
+    );
 
   return {
     unreadOrders:
-      ready
-        ? unreadOrders
-        : 0,
+      ready ? unreadOrders : 0,
 
     unreadChats:
-      ready
-        ? unreadChats
+      ready ? unreadChats : 0,
+
+    unreadStock:
+      ready && audience === "staff"
+        ? unreadStock
         : 0,
 
     totalUnread:
-      ready
-        ? unreadOrders +
-          unreadChats
-        : 0,
+      ready ? totalUnread : 0,
 
     ready,
 
     hasError:
       hasError ||
       !!preferences.error ||
-      !!notificationRecordsError,
+      !!notificationRecordsError ||
+      stockError,
   };
 }
