@@ -19,7 +19,6 @@ import { useRouter, type Href } from "expo-router";
 
 import {
   collection,
-  doc,
   onSnapshot,
 } from "firebase/firestore";
 
@@ -46,23 +45,11 @@ type GraphCategory =
   | "silkworms"
   | "cocoons";
 
-type OrderItem = {
-  productId: string;
-  quantity: number;
-};
-
 type OrderRecord = {
   id: string;
   createdAt: number;
-  deliveredAt: number;
   status: string;
   deliveryStatus: string;
-  items: OrderItem[];
-};
-
-type ProductRecord = {
-  id: string;
-  category: string;
 };
 
 type SilkwormRecord = {
@@ -74,12 +61,12 @@ type ActivityRecord = {
   id: string;
   createdAt: number;
   type: string;
+  message: string;
+  detail: string;
 };
 
 type CocoonInventory = {
   good: number;
-  minor: number;
-  unusable: number;
   reserved: number;
 };
 
@@ -129,8 +116,6 @@ const SERIES: GraphSeries[] = [
 
 const EMPTY_COCOONS: CocoonInventory = {
   good: 0,
-  minor: 0,
-  unusable: 0,
   reserved: 0,
 };
 
@@ -272,7 +257,6 @@ function createPeriods(
 function buildGraphData(
   period: GraphPeriod,
   orders: OrderRecord[],
-  products: ProductRecord[],
   activities: ActivityRecord[]
 ): GraphPoint[] {
   const points = createPeriods(period);
@@ -283,13 +267,6 @@ function buildGraphData(
     pointMap.set(point.key, point);
   }
 
-  const productCategoryMap = new Map(
-    products.map(product => [
-      product.id,
-      product.category,
-    ])
-  );
-
   function add(
     category: GraphCategory,
     timestamp: number,
@@ -298,7 +275,7 @@ function buildGraphData(
     const key = periodKey(timestamp, period);
     const point = pointMap.get(key);
 
-    if (!point || quantity <= 0) return;
+    if (!point || !Number.isSafeInteger(quantity) || quantity <= 0) return;
 
     point[category] += quantity;
   }
@@ -312,60 +289,48 @@ function buildGraphData(
   }
 
   // =====================================
-  // SUCCESSFULLY DELIVERED PRODUCTS
-  // =====================================
-
-  for (const order of orders) {
-    if (
-      order.status !== "Confirmed" ||
-      order.deliveryStatus !== "Delivered" ||
-      !order.deliveredAt
-    ) {
-      continue;
-    }
-
-    for (const item of order.items) {
-      if (
-        !Number.isSafeInteger(item.quantity) ||
-        item.quantity <= 0
-      ) {
-        continue;
-      }
-
-      // Count all purchased product units.
-
-      add(
-        "products",
-        order.deliveredAt,
-        item.quantity
-      );
-
-      // Count delivered silkworm units separately.
-
-      if (
-        productCategoryMap.get(item.productId) ===
-        "Silkworms"
-      ) {
-        add(
-          "silkworms",
-          order.deliveredAt,
-          item.quantity
-        );
-      }
-    }
-  }
-
-  // =====================================
-  // COCOON INVENTORY ACTIVITY
+  // INVENTORY ACTIVITY ADDITIONS
   // =====================================
 
   for (const activity of activities) {
-    if (activity.type === "cocoon") {
-      add(
-        "cocoons",
-        activity.createdAt,
-        1
-      );
+    if (
+      activity.type === "stock" &&
+      activity.message === "Product stock added"
+    ) {
+      const addition = /:\s*\+([0-9]+)\s+pcs\s*$/.exec(activity.detail);
+
+      if (addition) {
+        add("products", activity.createdAt, Number(addition[1]));
+      }
+    }
+
+    if (
+      activity.type === "stock" &&
+      activity.message === "Silkworm stock adjusted"
+    ) {
+      const adjustment = /:\s*\+?([0-9]+)\s+worms\s*$/.exec(activity.detail);
+
+      if (adjustment) {
+        add("silkworms", activity.createdAt, Number(adjustment[1]));
+      }
+    }
+
+    if (
+      (activity.type === "add" && activity.message === "Silkworm species added") ||
+      (activity.type === "edit" && activity.message === "Silkworm species updated")
+    ) {
+      const addition = / — Stock added: ([0-9]+) worms$/.exec(activity.detail);
+
+      if (addition) {
+        add("silkworms", activity.createdAt, Number(addition[1]));
+      }
+    }
+
+    if (
+      activity.type === "cocoon" &&
+      activity.message === "Cocoon region added"
+    ) {
+      add("cocoons", activity.createdAt, 1);
     }
   }
 
@@ -592,10 +557,6 @@ export default function AdminDashboard() {
     OrderRecord[]
   >([]);
 
-  const [products, setProducts] = useState<
-    ProductRecord[]
-  >([]);
-
   const [silkworms, setSilkworms] = useState<
     SilkwormRecord[]
   >([]);
@@ -683,29 +644,13 @@ export default function AdminDashboard() {
       snapshot => {
         const records: OrderRecord[] =
           snapshot.docs.map(item => {
-            const data = item.data();
-
-            const orderItems: OrderItem[] =
-              Array.isArray(data.items)
-                ? data.items.map((product: any) => ({
-                    productId: String(
-                      product.productId ?? ""
-                    ),
-                    quantity: Number(
-                      product.quantity ?? 0
-                    ),
-                  }))
-                : [];
+            const data = item.data({ serverTimestamps: "estimate" });
 
             return {
               id: item.id,
 
               createdAt: timestampMillis(
                 data.createdAt
-              ),
-
-              deliveredAt: timestampMillis(
-                data.deliveredAt
               ),
 
               status: String(
@@ -715,8 +660,6 @@ export default function AdminDashboard() {
               deliveryStatus: String(
                 data.deliveryStatus ?? "Pending"
               ),
-
-              items: orderItems,
             };
           });
 
@@ -728,37 +671,6 @@ export default function AdminDashboard() {
       reason => {
         saveError("orders", reason.message);
         markLoaded("orders");
-      }
-    );
-
-    return unsubscribe;
-  }, []);
-
-  // =====================================
-  // LIVE PRODUCT RECORDS
-  // =====================================
-
-  useEffect(() => {
-    const unsubscribe = onSnapshot(
-      collection(db, "products"),
-
-      snapshot => {
-        const records: ProductRecord[] =
-          snapshot.docs.map(item => ({
-            id: item.id,
-            category: String(
-              item.data().category ?? "Other"
-            ),
-          }));
-
-        setProducts(records);
-        clearError("products");
-        markLoaded("products");
-      },
-
-      reason => {
-        saveError("products", reason.message);
-        markLoaded("products");
       }
     );
 
@@ -802,33 +714,25 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     const unsubscribe = onSnapshot(
-      doc(db, "inventory", "cocoons"),
+      collection(db, "cocoon_regions"),
 
       snapshot => {
-        const data = snapshot.data();
+        const totals = snapshot.docs.reduce((total, item) => {
+          if (item.id === "unassigned") return total;
 
-        if (data) {
-          setCocoons({
-            good: asNonNegativeNumber(
-              data.good
+          const data = item.data();
+          const good = asNonNegativeNumber(data.good);
+
+          return {
+            good: total.good + good,
+            reserved: total.reserved + Math.min(
+              good,
+              asNonNegativeNumber(data.reserved)
             ),
+          };
+        }, EMPTY_COCOONS);
 
-            minor: asNonNegativeNumber(
-              data.minor
-            ),
-
-            unusable: asNonNegativeNumber(
-              data.unusable
-            ),
-
-            reserved: asNonNegativeNumber(
-              data.reserved
-            ),
-          });
-        } else {
-          setCocoons(EMPTY_COCOONS);
-        }
-
+        setCocoons(totals);
         clearError("cocoons");
         markLoaded("cocoons");
       },
@@ -860,8 +764,11 @@ export default function AdminDashboard() {
             ),
 
             createdAt: timestampMillis(
-              item.data().createdAt
+              item.data({ serverTimestamps: "estimate" }).createdAt
             ),
+
+            message: String(item.data().message ?? ""),
+            detail: String(item.data().detail ?? ""),
           }));
 
         setActivities(records);
@@ -932,13 +839,11 @@ export default function AdminDashboard() {
       buildGraphData(
         period,
         orders,
-        products,
         activities
       ),
     [
       period,
       orders,
-      products,
       activities,
     ]
   );
@@ -978,7 +883,6 @@ export default function AdminDashboard() {
 
   const allReady = [
     "orders",
-    "products",
     "silkworms",
     "cocoons",
     "activity",
@@ -986,7 +890,6 @@ export default function AdminDashboard() {
 
   const graphReady = [
     "orders",
-    "products",
     "activity",
   ].every(key => loaded[key]);
 
@@ -1363,23 +1266,13 @@ export default function AdminDashboard() {
               {/* GRAPH EXPLANATION */}
 
               <Text style={styles.graphNote}>
-                Orders count placement events.
-                Products and Silkworms count
-                units in successfully delivered
-                orders. Cocoons count inventory
-                update events, not individual
-                cocoon units.
+                Orders count new orders. Products count pieces added.
+                Silkworms count individual worms added. Cocoons count new regions.
               </Text>
 
               <Text style={styles.graphNote}>
-                Historical figures depend on
-                retained Firestore records.
-                Deleting an order removes it
-                from these statistics. Silkworm
-                classification uses the current
-                product catalog, so deleted or
-                recategorized products may not
-                be classified historically.
+                Historical stock totals include additions with a
+                recorded quantity.
               </Text>
             </View>
           )}

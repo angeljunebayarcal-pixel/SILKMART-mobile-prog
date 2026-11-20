@@ -34,9 +34,7 @@ export type DemoOrder = {
   deliveryStatus: DeliveryStatus;
   preferredDeliveryDate: string;
   confirmedDeliveryDate: string;
-  paymentMethod: "COD";
   items: CartItem[];
-  total: number;
 
   // Optional historical event timestamps. Existing orders do not have to
   // contain these fields, and new orders do not write them on creation.
@@ -135,9 +133,7 @@ function normalize(id: string, data: Record<string, any>): DemoOrder {
     deliveryStatus,
     preferredDeliveryDate: String(data.preferredDeliveryDate ?? ""),
     confirmedDeliveryDate: String(data.confirmedDeliveryDate ?? ""),
-    paymentMethod: "COD",
     items: Array.isArray(data.items) ? (data.items as CartItem[]) : [],
-    total: Number(data.total ?? 0),
     updatedAt: timestampToIso(data.updatedAt),
     decisionAt: timestampToIso(data.decisionAt),
     scheduledAt: timestampToIso(data.scheduledAt),
@@ -190,8 +186,6 @@ export async function readDemoOrders(uid: string): Promise<DemoOrder[]> {
           deliveryStatus: "Pending" as const,
           preferredDeliveryDate: "",
           confirmedDeliveryDate: "",
-          paymentMethod: "COD" as const,
-          total: Number(item.total ?? 0),
         }));
     }
   } catch {
@@ -218,8 +212,6 @@ function validCartItem(item: CartItem): boolean {
     item.name.trim().length > 0 &&
     Number.isSafeInteger(item.quantity) &&
     item.quantity >= 1 &&
-    Number.isFinite(item.price) &&
-    item.price >= 0 &&
     Number.isFinite(item.maxQuantity) &&
     item.maxQuantity >= item.quantity
   );
@@ -251,25 +243,18 @@ export async function createDemoOrder(
   }
 
   if (items.some(item => !validCartItem(item))) {
-    throw new Error("Your bag contains an invalid product, price, or quantity.");
+    throw new Error("Your bag contains an invalid product or quantity.");
   }
 
   // Do not duplicate Base64 product photos inside an order document.
-  const orderItems: CartItem[] = items.map(item => {
-    const { imageUrl: _imageUrl, ...details } = item;
-    return { ...details, imageUrl: "" };
-  });
-
-  const rawTotal = orderItems.reduce(
-    (sum, item) => sum + item.price * item.quantity,
-    0
-  );
-
-  const total = Math.round((rawTotal + Number.EPSILON) * 100) / 100;
-
-  if (!Number.isFinite(total) || total < 0 || total > 1000000000) {
-    throw new Error("The order total is invalid.");
-  }
+  const orderItems: CartItem[] = items.map(item => ({
+    productId: item.productId,
+    name: item.name,
+    color: item.color,
+    quantity: item.quantity,
+    maxQuantity: item.maxQuantity,
+    imageUrl: "",
+  }));
 
   const reference = doc(collection(db, "orders"));
   const createdAt = new Date().toISOString();
@@ -282,12 +267,9 @@ export async function createDemoOrder(
     deliveryStatus: "Pending",
     preferredDeliveryDate,
     confirmedDeliveryDate: "",
-    paymentMethod: "COD",
     items: orderItems,
-    total,
   };
 
-  // Keep the create payload unchanged to satisfy existing Firestore rules.
   await setDoc(reference, {
     ...order,
     createdAt: serverTimestamp(),

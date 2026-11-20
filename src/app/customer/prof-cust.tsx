@@ -82,7 +82,6 @@ type RecentOrder = {
   id: string;
   name: string;
   status: string;
-  total: number;
   createdAt: number;
 };
 
@@ -255,13 +254,6 @@ function getErrorMessage(reason: unknown): string {
         ? reason.message
         : `Unable to complete this action${code ? ` (${code})` : ""}.`;
   }
-}
-
-function formatPrice(value: number): string {
-  return `₱${value.toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
 }
 
 // =====================================
@@ -748,10 +740,6 @@ export default function CustomerProfileScreen() {
               name,
               status: readString(data.status) ||
                 "Pending",
-              total:
-                typeof data.total === "number"
-                  ? data.total
-                  : 0,
               createdAt: getMillis(
                 data.createdAt
               ),
@@ -1573,10 +1561,6 @@ export default function CustomerProfileScreen() {
                           {order.status}
                         </Text>
                       </View>
-
-                      <Text style={styles.orderTotal}>
-                        {formatPrice(order.total)}
-                      </Text>
                     </View>
                   ))
                 )}
@@ -2317,12 +2301,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "700",
     marginTop: 6,
-  },
-
-  orderTotal: {
-    color: DARK,
-    fontSize: 11,
-    fontWeight: "700",
   },
 
   // SETTINGS MODAL

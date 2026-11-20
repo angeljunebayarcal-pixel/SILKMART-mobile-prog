@@ -96,13 +96,6 @@ const LINE = C.line;
 const RED = "#A43F3F";
 const SOFT = "#EAF2E8";
 
-function money(amount: number): string {
-  return `₱${Number(amount || 0).toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
 function friendlyDate(value?: string): string {
   if (!value) return "Not set";
 
@@ -796,7 +789,7 @@ export default function CustomerOrders() {
                 </Text>
 
                 <Text style={styles.productMeta}>
-                  {item.quantity} × {money(item.price)}
+                  {item.quantity}
                 </Text>
 
                 {!!item.color && (
@@ -804,10 +797,6 @@ export default function CustomerOrders() {
                     Color: {item.color}
                   </Text>
                 )}
-
-                <Text style={styles.productSubtotal}>
-                  {money(item.price * item.quantity)}
-                </Text>
               </View>
 
               {!large && (
@@ -966,10 +955,6 @@ export default function CustomerOrders() {
               {renderProducts(order)}
 
               <View style={styles.orderDetails}>
-                <Text style={S.muted}>
-                  Total: {money(order.total)} · COD
-                </Text>
-
                 <Text style={S.muted}>
                   Requested:{" "}
                   {order.preferredDeliveryDate || "None"}
@@ -1192,12 +1177,6 @@ export default function CustomerOrders() {
                     />
 
                     <DetailRow
-                      icon="card-outline"
-                      label="Payment Method"
-                      value="Cash on Delivery (COD)"
-                    />
-
-                    <DetailRow
                       icon="calendar-number-outline"
                       label="Preferred Delivery Date"
                       value={friendlyDate(
@@ -1226,16 +1205,6 @@ export default function CustomerOrders() {
                         selectedOrder.deliveryStatus || "Pending"
                       }
                     />
-
-                    <View style={styles.totalRow}>
-                      <Text style={styles.totalLabel}>
-                        Order Total
-                      </Text>
-
-                      <Text style={styles.totalAmount}>
-                        {money(selectedOrder.total)}
-                      </Text>
-                    </View>
                   </View>
                 </ScrollView>
 
@@ -1814,13 +1783,6 @@ const styles = StyleSheet.create({
     color: MUTED,
   },
 
-  productSubtotal: {
-    marginTop: 2,
-    fontSize: 12,
-    fontWeight: "700",
-    color: GREEN,
-  },
-
   orderDetails: {
     gap: 5,
     marginTop: 4,
@@ -2019,29 +1981,6 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 14,
     marginBottom: 8,
-  },
-
-  totalRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    marginTop: 17,
-    paddingTop: 15,
-    borderTopWidth: 1,
-    borderTopColor: LINE,
-  },
-
-  totalLabel: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: DARK,
-  },
-
-  totalAmount: {
-    fontSize: 19,
-    fontWeight: "700",
-    color: GREEN,
   },
 
   modalFooter: {

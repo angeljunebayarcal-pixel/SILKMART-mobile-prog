@@ -84,13 +84,6 @@ const SURFACE = "#FFFDF8";
 // HELPERS
 // =====================================
 
-function money(amount: number): string {
-  return `₱${Number(amount || 0).toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
 function formatDate(value?: string): string {
   if (!value) return "Not set";
 
@@ -199,9 +192,7 @@ function normalizeOrder(
     confirmedDeliveryDate: String(
       data.confirmedDeliveryDate ?? ""
     ),
-    paymentMethod: "COD",
     items: Array.isArray(data.items) ? data.items : [],
-    total: Number(data.total ?? 0),
   };
 }
 
@@ -674,7 +665,7 @@ export default function Delivery() {
       <Heading
         label="DELIVERY MANAGEMENT"
         title="Delivery Management"
-        description="Manage preferred dates, delivery schedules, and order fulfillment. Cash on Delivery only."
+        description="Manage preferred dates, delivery schedules, and order fulfillment."
       />
 
       {/* DELIVERY STATISTICS */}
@@ -815,8 +806,7 @@ export default function Delivery() {
                           </Text>
 
                           <Text style={styles.productMeta}>
-                            {item.quantity} ×{" "}
-                            {money(item.price)}
+                            {item.quantity}
                           </Text>
 
                           {!!item.color && (
@@ -824,12 +814,6 @@ export default function Delivery() {
                               Color: {item.color}
                             </Text>
                           )}
-
-                          <Text style={styles.productSubtotal}>
-                            {money(
-                              item.price * item.quantity
-                            )}
-                          </Text>
                         </View>
                       </View>
                     );
@@ -840,20 +824,6 @@ export default function Delivery() {
               {/* ORDER SUMMARY */}
 
               <View style={styles.summary}>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>
-                    Total
-                  </Text>
-
-                  <Text style={styles.totalValue}>
-                    {money(order.total)}
-                  </Text>
-                </View>
-
-                <Text style={styles.summaryText}>
-                  Payment: Cash on Delivery (COD)
-                </Text>
-
                 <Text style={styles.summaryText}>
                   Preferred date:{" "}
                   {formatDate(
@@ -1407,38 +1377,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
 
-  productSubtotal: {
-    color: C.green,
-    fontSize: 12,
-    fontWeight: "700",
-    marginTop: 3,
-  },
-
   summary: {
     marginTop: 6,
     padding: 12,
     backgroundColor: "#F0F5EC",
     borderRadius: 12,
     gap: 6,
-  },
-
-  summaryRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 3,
-  },
-
-  summaryLabel: {
-    color: C.dark,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-
-  totalValue: {
-    color: C.green,
-    fontSize: 15,
-    fontWeight: "700",
   },
 
   summaryText: {

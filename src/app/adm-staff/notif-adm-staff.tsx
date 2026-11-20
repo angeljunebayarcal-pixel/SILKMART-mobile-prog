@@ -167,13 +167,6 @@ function formatDate(value?: string) {
   return value;
 }
 
-function money(value: number) {
-  return `₱${Number(value || 0).toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
 function normalizeOrder(id: string, data: Row): DemoOrder {
   const iso = (value: unknown) => {
     const time = toMillis(value);
@@ -209,9 +202,7 @@ function normalizeOrder(id: string, data: Row): DemoOrder {
     dispatchedAt: iso(data.dispatchedAt),
     deliveredAt: iso(data.deliveredAt),
     updatedAt: iso(data.updatedAt),
-    paymentMethod: "COD",
     items: Array.isArray(data.items) ? data.items : [],
-    total: Number(data.total ?? 0),
   };
 }
 
@@ -255,7 +246,7 @@ function buildOrderNotices(orders: DemoOrder[]): Notice[] {
     add(
       `placed:${order.id}`,
       "New customer order",
-      `An order for ${name} was placed. Total: ${money(order.total)}. Preferred delivery date: ${formatDate(order.preferredDeliveryDate)}.`,
+      `An order for ${name} was placed. Preferred delivery date: ${formatDate(order.preferredDeliveryDate)}.`,
       "bag-handle-outline"
     );
 

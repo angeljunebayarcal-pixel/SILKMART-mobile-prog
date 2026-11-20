@@ -1,4 +1,3 @@
-
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
@@ -17,7 +16,6 @@ import { auth, db } from "../firebase/config";
 export type CartItem = {
   productId: string;
   name: string;
-  price: number;
   color: string;
   quantity: number;
   maxQuantity: number;
@@ -120,10 +118,6 @@ function isValidCartItem(
     typeof item.name === "string" &&
     item.name.trim().length > 0 &&
 
-    typeof item.price === "number" &&
-    Number.isFinite(item.price) &&
-    item.price >= 0 &&
-
     typeof item.color === "string" &&
 
     typeof item.quantity === "number" &&
@@ -162,7 +156,11 @@ function normalizeCart(
 
     if (index < 0) {
       result.push({
-        ...item,
+        productId: item.productId,
+        name: item.name,
+        color: item.color,
+        quantity: item.quantity,
+        maxQuantity: item.maxQuantity,
         imageUrl: item.imageUrl || "",
       });
 
@@ -182,7 +180,6 @@ function normalizeCart(
     result[index] = {
       ...existing,
       name: item.name,
-      price: item.price,
       maxQuantity,
       imageUrl:
         item.imageUrl ||
@@ -319,7 +316,6 @@ function prepareFirestoreCart(
     return {
       productId: item.productId,
       name: item.name,
-      price: item.price,
       color: item.color,
       quantity: item.quantity,
       maxQuantity: item.maxQuantity,
@@ -462,7 +458,7 @@ export async function writeCart(
     !items.every(isValidCartItem)
   ) {
     throw new Error(
-      "Your bag contains an invalid product, price, or quantity."
+      "Your bag contains an invalid product or quantity."
     );
   }
 

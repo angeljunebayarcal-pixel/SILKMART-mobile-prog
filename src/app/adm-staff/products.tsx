@@ -22,8 +22,8 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  runTransaction,
   serverTimestamp,
-  setDoc,
   updateDoc,
   type Timestamp,
 } from "firebase/firestore";
@@ -52,7 +52,6 @@ type ShopProduct = {
   name: string;
   category: string;
   description: string;
-  price: number;
   stock: number;
   imageUrl: string;
   published: boolean;
@@ -67,7 +66,6 @@ type ProductForm = {
   name: string;
   category: string;
   description: string;
-  price: string;
   stock: string;
   imageUrl: string;
   inventorySpeciesId: string;
@@ -95,8 +93,6 @@ type SortOption =
   | "Newest First"
   | "Oldest First"
   | "Product Name"
-  | "Price: Low to High"
-  | "Price: High to Low"
   | "Lowest Stock";
 
 // -------------------------------------
@@ -150,8 +146,6 @@ const sortOptions: SortOption[] = [
   "Newest First",
   "Oldest First",
   "Product Name",
-  "Price: Low to High",
-  "Price: High to Low",
   "Lowest Stock",
 ];
 
@@ -164,7 +158,6 @@ function emptyForm(): ProductForm {
     name: "",
     category: "Scarves",
     description: "",
-    price: "",
     stock: "",
     imageUrl: "",
     inventorySpeciesId: "",
@@ -202,13 +195,6 @@ function stockLevel(quantity: number, threshold: number) {
   if (quantity <= 0) return "Out of Stock";
   if (quantity <= threshold) return "Low Stock";
   return "In Stock";
-}
-
-function money(value: number) {
-  return `₱${value.toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
 }
 
 function dateMillis(value: unknown): number {
@@ -263,7 +249,6 @@ function normalizeProduct(
     name: String(data.name ?? ""),
     category: String(data.category ?? "Other"),
     description: String(data.description ?? ""),
-    price: Number(data.price ?? 0),
     stock: Number(data.stock ?? 0),
     imageUrl: String(data.imageUrl ?? ""),
     inventorySpeciesId: String(data.inventorySpeciesId ?? ""),
@@ -637,12 +622,6 @@ export default function Products() {
           case "Product Name":
             return a.name.localeCompare(b.name);
 
-          case "Price: Low to High":
-            return a.price - b.price;
-
-          case "Price: High to Low":
-            return b.price - a.price;
-
           case "Lowest Stock":
             return a.stock - b.stock;
 
@@ -683,7 +662,6 @@ export default function Products() {
       name: product.name,
       category: product.category,
       description: product.description,
-      price: String(product.price),
       stock: String(product.stock),
       imageUrl: product.imageUrl,
       inventorySpeciesId: product.inventorySpeciesId,
@@ -895,14 +873,6 @@ export default function Products() {
     }
 
     if (
-      form.price.trim() === "" ||
-      !Number.isFinite(Number(form.price)) ||
-      Number(form.price) < 0
-    ) {
-      return "Enter a valid selling price.";
-    }
-
-    if (
       hasColorStock &&
       form.colorStocks.some(
         item =>
@@ -964,7 +934,8 @@ export default function Products() {
       return;
     }
 
-    if (!auth.currentUser) {
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
       setFormError(
         "Sign in before saving a product."
       );
@@ -1020,7 +991,6 @@ export default function Products() {
       name: form.name.trim(),
       category: form.category,
       description: form.description.trim(),
-      price: Number(form.price),
       stock,
       colorStocks,
       imageUrl: form.imageUrl.trim(),
@@ -1033,26 +1003,55 @@ export default function Products() {
     };
 
     try {
-      if (editingId) {
-        await updateDoc(
-          doc(db, "products", editingId),
-          data
-        );
+      const reference = editingId
+        ? doc(db, "products", editingId)
+        : doc(collection(db, "products"));
 
+      await runTransaction(db, async transaction => {
+        let previousStock = 0;
+
+        if (editingId) {
+          const snapshot = await transaction.get(reference);
+
+          if (!snapshot.exists()) {
+            throw new Error("This product no longer exists.");
+          }
+
+          previousStock = Number(snapshot.data().stock ?? 0);
+        }
+
+        if (editingId) {
+          transaction.update(reference, data);
+        } else {
+          transaction.set(reference, {
+            ...data,
+            id: reference.id,
+            createdAt: serverTimestamp(),
+          });
+        }
+
+        const added = stock - previousStock;
+
+        if (
+          data.category !== "Silkworms" &&
+          Number.isSafeInteger(added) &&
+          added > 0
+        ) {
+          transaction.set(doc(collection(db, "inventory_activity")), {
+            message: "Product stock added",
+            detail: `${data.name}: +${added} pcs`,
+            type: "stock",
+            actorUid: uid,
+            createdAt: serverTimestamp(),
+          });
+        }
+      });
+
+      if (editingId) {
         setNotice(
           "Product updated successfully."
         );
       } else {
-        const reference = doc(
-          collection(db, "products")
-        );
-
-        await setDoc(reference, {
-          ...data,
-          id: reference.id,
-          createdAt: serverTimestamp(),
-        });
-
         setSelectedId(reference.id);
         setNotice(
           "Product added successfully."
@@ -1089,7 +1088,7 @@ export default function Products() {
 
     const nextValue = !product.published;
 
-    // Refresh inventory quantity before publishing a linked silkworm.
+    // Refresh inventory before publishing a linked silkworm.
     let actualStock = product.stock;
     if (product.inventorySpeciesId) {
       try {
@@ -1477,9 +1476,6 @@ export default function Products() {
                       <Text style={S.muted}>
                         {product.category}{product.inventorySpeciesId ? " · Inventory linked" : ""}
                       </Text>
-                      <Text style={styles.priceText}>
-                        {money(product.price)}
-                      </Text>
                     </View>
 
                     <Ionicons
@@ -1843,19 +1839,6 @@ export default function Products() {
                 </View>
               )}
 
-              <FormField label="Selling Price (PHP)">
-                <TextInput
-                  style={S.input}
-                  value={form.price}
-                  placeholder="0.00"
-                  placeholderTextColor={C.muted}
-                  keyboardType="decimal-pad"
-                  onChangeText={value =>
-                    updateForm("price", value)
-                  }
-                />
-              </FormField>
-
               {supportsColors(form.category) && (
                 <View style={styles.colorPanel}>
                   <Text style={styles.fieldLabel}>
@@ -2199,10 +2182,6 @@ export default function Products() {
                   value={selectedProduct.category}
                 />
                 <DetailRow
-                  label="Price"
-                  value={money(selectedProduct.price)}
-                />
-                <DetailRow
                   label="Stock"
                   value={`${selectedProduct.stock.toLocaleString()} ${stockUnit(
                     selectedProduct.category
@@ -2257,7 +2236,9 @@ export default function Products() {
                     <Text
                       style={[
                         S.muted,
-                        { marginTop: 8 },
+                        {
+                          marginTop: 8,
+                        },
                       ]}
                     >
                       {selectedProduct.description}
@@ -2786,13 +2767,6 @@ const styles = StyleSheet.create({
     fontFamily: "serif",
     fontSize: 17,
     marginBottom: 3,
-  },
-
-  priceText: {
-    color: C.green,
-    fontSize: 13,
-    fontWeight: "700",
-    marginTop: 5,
   },
 
   productMeta: {

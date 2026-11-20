@@ -35,7 +35,6 @@ type Product = {
   name: string;
   category: string;
   description: string;
-  price: number;
   stock: number;
   featured: boolean;
   imageUrl: string;
@@ -61,7 +60,6 @@ function fromFirestore(id: string, data: Record<string, any>): Product {
     name: String(data.name ?? ""),
     category: String(data.category ?? "Other"),
     description: String(data.description ?? ""),
-    price: Number(data.price ?? 0),
     stock: Number.isSafeInteger(stock) && stock >= 0 ? stock : 0,
     featured: data.featured === true,
     imageUrl: String(data.imageUrl ?? ""),
@@ -78,12 +76,6 @@ function fromFirestore(id: string, data: Record<string, any>): Product {
       : [],
   };
 }
-
-const money = (value: number) =>
-  `₱${value.toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
 
 const stockUnit = (category: string) => {
   if (category === "Silkworms") return "worms";
@@ -249,7 +241,7 @@ export default function ShopSilk() {
   ];
 
   const products = useMemo(() => {
-    let result = catalog.filter((product) => {
+    const result = catalog.filter((product) => {
       const matchesCategory =
         category === "All pieces" ||
         product.category === category;
@@ -264,18 +256,10 @@ export default function ShopSilk() {
       return matchesCategory && matchesSearch && product.stock > 0;
     });
 
-    if (sort === "low") {
-      result = [...result].sort((a, b) => a.price - b.price);
-    } else if (sort === "high") {
-      result = [...result].sort((a, b) => b.price - a.price);
-    } else {
-      result = [...result].sort(
-        (a, b) => Number(b.featured) - Number(a.featured)
-      );
-    }
-
-    return result;
-  }, [catalog, search, category, sort]);
+    return result.sort(
+      (a, b) => Number(b.featured) - Number(a.featured)
+    );
+  }, [catalog, search, category]);
 
   useEffect(() => {
     if (!selectedProduct) return;
@@ -344,7 +328,6 @@ export default function ShopSilk() {
     const item: CartItem = {
       productId: selectedProduct.id,
       name: selectedProduct.name,
-      price: selectedProduct.price,
       color: selectedColor,
       quantity,
       maxQuantity,
@@ -470,10 +453,6 @@ export default function ShopSilk() {
 
           <Text style={styles.productName} numberOfLines={2}>
             {item.name}
-          </Text>
-
-          <Text style={styles.productPrice}>
-            {money(item.price)}
           </Text>
 
           <View style={styles.productBottom}>
@@ -615,11 +594,7 @@ export default function ShopSilk() {
                 onPress={() => setShowSort(!showSort)}
               >
                 <Text style={styles.sortButtonText}>
-                  {sort === "low"
-                    ? "Price: Low to high"
-                    : sort === "high"
-                      ? "Price: High to low"
-                      : "Featured first"}
+                  Featured first
                 </Text>
 
                 <Ionicons
@@ -638,8 +613,6 @@ export default function ShopSilk() {
               <View style={styles.sortOptions}>
                 {[
                   { value: "featured", label: "Featured first" },
-                  { value: "low", label: "Price: Low to high" },
-                  { value: "high", label: "Price: High to low" },
                 ].map((option) => (
                   <Pressable
                     key={option.value}
@@ -748,10 +721,6 @@ export default function ShopSilk() {
 
                 <Text style={styles.modalProductName}>
                   {selectedProduct.name}
-                </Text>
-
-                <Text style={styles.modalPrice}>
-                  {money(selectedProduct.price)}
                 </Text>
 
                 <Text style={styles.modalDescription}>
@@ -1255,12 +1224,6 @@ const styles = StyleSheet.create({
     color: DARK,
     minHeight: 32,
   },
-  productPrice: {
-    fontSize: 13,
-    color: GREEN,
-    fontWeight: "700",
-    marginTop: 3,
-  },
   productBottom: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1407,12 +1370,6 @@ const styles = StyleSheet.create({
     fontFamily: "serif",
     fontSize: 29,
     marginTop: 7,
-  },
-  modalPrice: {
-    fontSize: 19,
-    fontWeight: "700",
-    color: GREEN,
-    marginTop: 5,
   },
   modalDescription: {
     fontSize: 13,

@@ -172,16 +172,6 @@ function displayTime(value: number): string {
   });
 }
 
-function money(amount: number): string {
-  return `₱${Number(amount || 0).toLocaleString(
-    "en-PH",
-    {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }
-  )}`;
-}
-
 function productTitle(order: DemoOrder): string {
   const first = order.items?.[0]?.name;
 
@@ -236,11 +226,9 @@ function normalizeOrder(
     preparingAt: toIsoTime(data.preparingAt),
     dispatchedAt: toIsoTime(data.dispatchedAt),
     deliveredAt: toIsoTime(data.deliveredAt),
-    paymentMethod: "COD",
     items: Array.isArray(data.items)
       ? data.items
       : [],
-    total: Number(data.total ?? 0),
   };
 }
 

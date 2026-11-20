@@ -1,4 +1,3 @@
-
 import React, {
   useCallback,
   useEffect,
@@ -43,16 +42,6 @@ const GREEN = "#235F45";
 const DARK = "#173B2C";
 const MUTED = "#627C6E";
 const CREAM = "#FAF9F1";
-
-// =====================================
-// HELPERS
-// =====================================
-
-const money = (n: number) =>
-  `₱${n.toLocaleString("en-PH", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
 
 // =====================================
 // ANIMATION
@@ -407,16 +396,6 @@ export default function CartScreen() {
   }
 
   // =====================================
-  // CART TOTAL
-  // =====================================
-
-  const total = items.reduce(
-    (sum, item) =>
-      sum + item.price * item.quantity,
-    0
-  );
-
-  // =====================================
   // SCREEN
   // =====================================
 
@@ -577,10 +556,6 @@ export default function CartScreen() {
                         </Text>
                       )}
 
-                      <Text style={styles.itemPrice}>
-                        {money(item.price)} each
-                      </Text>
-
                       {/* ITEM ACTIONS */}
 
                       <View style={styles.itemActions}>
@@ -679,18 +654,6 @@ export default function CartScreen() {
               })}
             </View>
 
-            {/* SUBTOTAL */}
-
-            <View style={styles.summary}>
-              <Text style={styles.summaryTitle}>
-                Subtotal
-              </Text>
-
-              <Text style={styles.summaryTotal}>
-                {money(total)}
-              </Text>
-            </View>
-
             {/* INFORMATION */}
 
             <View style={styles.tipCard}>
@@ -704,7 +667,7 @@ export default function CartScreen() {
                 Requests are sent to staff for review.
                 Choose a preferred delivery date; it
                 is not confirmed until staff approves
-                it. Payment is Cash on Delivery (COD).
+                it.
                 Stock is not reserved automatically.
               </Text>
             </View>
@@ -941,13 +904,6 @@ const styles = StyleSheet.create({
     marginTop: 5,
   },
 
-  itemPrice: {
-    color: GREEN,
-    fontSize: 12,
-    fontWeight: "700",
-    marginTop: 8,
-  },
-
   itemActions: {
     flexDirection: "row",
     alignItems: "center",
@@ -971,25 +927,6 @@ const styles = StyleSheet.create({
     color: DARK,
     minWidth: 25,
     textAlign: "center",
-  },
-
-  summary: {
-    marginTop: 19,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-
-  summaryTitle: {
-    fontSize: 14,
-    color: DARK,
-    fontWeight: "600",
-  },
-
-  summaryTotal: {
-    fontSize: 18,
-    color: GREEN,
-    fontWeight: "700",
   },
 
   error: {

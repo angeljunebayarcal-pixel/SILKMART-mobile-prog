@@ -79,16 +79,6 @@ const filters: Filter[] = [
 // HELPERS
 // =====================================
 
-function money(amount: number): string {
-  return `₱${Number(amount || 0).toLocaleString(
-    "en-PH",
-    {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }
-  )}`;
-}
-
 function displayDate(value?: string): string {
   if (!value) return "Not scheduled";
 
@@ -901,8 +891,7 @@ export default function OrdersScreen() {
                           <Text
                             style={styles.itemMeta}
                           >
-                            {item.quantity} ×{" "}
-                            {money(item.price)}
+                            {item.quantity}
                           </Text>
 
                           {!!item.color && (
@@ -913,15 +902,6 @@ export default function OrdersScreen() {
                             </Text>
                           )}
                         </View>
-
-                        <Text
-                          style={styles.itemSubtotal}
-                        >
-                          {money(
-                            item.quantity *
-                              item.price
-                          )}
-                        </Text>
                       </View>
                     )
                   )}
@@ -1006,38 +986,6 @@ export default function OrdersScreen() {
                           "Pending"}
                       </Text>
                     </View>
-
-                    <View
-                      style={styles.detailRow}
-                    >
-                      <Text
-                        style={styles.detailLabel}
-                      >
-                        Payment
-                      </Text>
-
-                      <Text
-                        style={styles.detailValue}
-                      >
-                        Cash on Delivery
-                      </Text>
-                    </View>
-                  </View>
-
-                  {/* ORDER TOTAL */}
-
-                  <View style={styles.orderTotal}>
-                    <Text
-                      style={styles.totalLabel}
-                    >
-                      Order Total
-                    </Text>
-
-                    <Text
-                      style={styles.totalValue}
-                    >
-                      {money(order.total)}
-                    </Text>
                   </View>
 
                   {/* NOTIFICATIONS LINK */}
@@ -1426,12 +1374,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  itemSubtotal: {
-    color: GREEN,
-    fontSize: 11,
-    fontWeight: "700",
-  },
-
   deliverySection: {
     borderTopWidth: 1,
     borderTopColor: "#E4EADF",
@@ -1473,27 +1415,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     flex: 1,
     textAlign: "right",
-  },
-
-  orderTotal: {
-    borderTopWidth: 1,
-    borderTopColor: "#E4EADF",
-    paddingTop: 15,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-
-  totalLabel: {
-    color: DARK,
-    fontWeight: "600",
-    fontSize: 13,
-  },
-
-  totalValue: {
-    color: GREEN,
-    fontWeight: "700",
-    fontSize: 18,
   },
 
   messageButton: {

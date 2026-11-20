@@ -1,4 +1,3 @@
-
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -25,6 +24,8 @@ import {
   runTransaction,
   serverTimestamp,
   writeBatch,
+  type DocumentData,
+  type DocumentReference,
 } from "firebase/firestore";
 
 import * as ImagePicker from "expo-image-picker";
@@ -63,6 +64,11 @@ type Cocoons = {
   unusable: number;
   reserved: number;
   imageUrl: string;
+};
+
+type CocoonRegion = Cocoons & {
+  id: string;
+  name: string;
 };
 
 type Activity = {
@@ -113,6 +119,8 @@ const CONDITIONS = [
 ];
 
 const COCOON_LOW_STOCK_THRESHOLD = 100;
+const UNASSIGNED_COCOON_REGION_ID = "unassigned";
+const COCOON_STOCK_FIELDS = ["good", "minor", "unusable", "reserved"] as const;
 
 const blankSpecies = (): Species => ({
   id: "",
@@ -125,20 +133,22 @@ const blankSpecies = (): Species => ({
   imageUrl: "",
 });
 
-const blankCocoons = (): Cocoons => ({
-  good: 0,
-  minor: 0,
-  unusable: 0,
-  reserved: 0,
-  imageUrl: "",
-});
-
 // =====================================
 // HELPERS
 // =====================================
 
 const asNumber = (value: unknown) =>
   Number.isFinite(Number(value)) ? Number(value) : 0;
+
+function readCocoonStock(data: Record<string, unknown> = {}): Cocoons {
+  return {
+    good: asNumber(data.good),
+    minor: asNumber(data.minor),
+    unusable: asNumber(data.unusable),
+    reserved: asNumber(data.reserved),
+    imageUrl: String(data.imageUrl ?? ""),
+  };
+}
 
 const positiveInteger = (value: string) =>
   value.trim() !== "" &&
@@ -272,10 +282,6 @@ export default function Inventory() {
     Species[]
   >([]);
 
-  const [cocoons, setCocoons] = useState<Cocoons>(
-    blankCocoons()
-  );
-
   const [activities, setActivities] = useState<
     Activity[]
   >([]);
@@ -306,6 +312,15 @@ export default function Inventory() {
 
   // Cocoon fields
 
+  const [cocoonRegions, setCocoonRegions] = useState<CocoonRegion[]>([]);
+  const [cocoonRegionsReady, setCocoonRegionsReady] = useState(false);
+  const [cocoonRegionsError, setCocoonRegionsError] = useState("");
+  const [selectedCocoonRegionId, setSelectedCocoonRegionId] =
+    useState<string | null>(null);
+  const [editedCocoonRegion, setEditedCocoonRegion] =
+    useState<CocoonRegion | null>(null);
+  const [cocoonRegionName, setCocoonRegionName] = useState("");
+
   const [goodChange, setGoodChange] =
     useState("0");
 
@@ -316,9 +331,6 @@ export default function Inventory() {
     useState("0");
 
   const [showAllActivity, setShowAllActivity] =
-    useState(false);
-
-  const [cocoonsExist, setCocoonsExist] =
     useState(false);
 
   const [reservedText, setReservedText] =
@@ -374,8 +386,14 @@ export default function Inventory() {
 
   useEffect(() => {
     setSpecies([]);
-    setCocoons(blankCocoons());
-    setCocoonsExist(false);
+    setCocoonRegions([]);
+    setCocoonRegionsReady(false);
+    setCocoonRegionsError("");
+    setSelectedCocoonRegionId(null);
+    setEditedCocoonRegion(null);
+    setEditor(current =>
+      current === "cocoons" || current === "reserved" ? null : current
+    );
     setActivities([]);
     setError("");
     setReady(false);
@@ -386,7 +404,7 @@ export default function Inventory() {
     }
 
     let firstSpecies = false;
-    let firstCocoons = false;
+    let firstCocoonRegions = false;
 
     const handleError = (reason: unknown) => {
       setError(formatError(reason));
@@ -428,41 +446,47 @@ export default function Inventory() {
 
         firstSpecies = true;
 
-        if (firstCocoons) {
+        if (firstCocoonRegions) {
           setReady(true);
         }
       },
       handleError
     );
 
-    const subCocoons = onSnapshot(
-      doc(db, "inventory", "cocoons"),
+    const subCocoonRegions = onSnapshot(
+      collection(db, "cocoon_regions"),
       snapshot => {
-        const data = snapshot.data();
-
-        setCocoonsExist(snapshot.exists());
-
-        setCocoons(
-          data
-            ? {
-                good: asNumber(data.good),
-                minor: asNumber(data.minor),
-                unusable: asNumber(data.unusable),
-                reserved: asNumber(data.reserved),
-                imageUrl: String(
-                  data.imageUrl ?? ""
-                ),
-              }
-            : blankCocoons()
+        setCocoonRegions(
+          snapshot.docs
+            .filter(item => item.id !== UNASSIGNED_COCOON_REGION_ID)
+            .map(item => {
+              const data = item.data();
+              return {
+                ...readCocoonStock(data),
+                id: item.id,
+                name: String(data.name ?? ""),
+              };
+            }).sort((a, b) => a.name.localeCompare(b.name))
         );
+        setCocoonRegionsReady(true);
+        setCocoonRegionsError("");
 
-        firstCocoons = true;
+        firstCocoonRegions = true;
 
         if (firstSpecies) {
           setReady(true);
         }
       },
-      handleError
+      reason => {
+        setCocoonRegionsReady(false);
+        setCocoonRegionsError(formatError(reason));
+
+        firstCocoonRegions = true;
+
+        if (firstSpecies) {
+          setReady(true);
+        }
+      }
     );
 
     // Recent inventory activity
@@ -498,7 +522,7 @@ export default function Inventory() {
 
     return () => {
       subSpecies();
-      subCocoons();
+      subCocoonRegions();
       subActivity();
     };
   }, [user?.uid]);
@@ -531,35 +555,31 @@ export default function Inventory() {
     0
   );
 
-  const totalCocoons =
-    cocoons.good +
-    cocoons.minor +
-    cocoons.unusable;
-
-  const availableCocoons = Math.max(
-    0,
-    cocoons.good - cocoons.reserved
-  );
-
-  const qualityPercent = totalCocoons
-    ? Math.round(
-        (100 * cocoons.good) / totalCocoons
-      )
-    : 0;
-
   const lowStock = species.filter(
     item =>
       item.quantity <= item.threshold
   );
 
-  const cocoonLowStock =
-    cocoonsExist &&
-    availableCocoons <=
-      COCOON_LOW_STOCK_THRESHOLD;
+  const cocoonTotals = cocoonRegions.reduce(
+    (total, region) => ({
+      good: total.good + region.good,
+      minor: total.minor + region.minor,
+      unusable: total.unusable + region.unusable,
+      reserved: total.reserved + region.reserved,
+    }),
+    { good: 0, minor: 0, unusable: 0, reserved: 0 }
+  );
+
+  const selectedCocoonRegion = cocoonRegions.find(
+    region => region.id === selectedCocoonRegionId
+  );
+
+  const lowCocoonRegions = cocoonRegions.filter(
+    region => region.good - region.reserved <= COCOON_LOW_STOCK_THRESHOLD
+  );
 
   const lowStockAlertCount =
-    lowStock.length +
-    (cocoonLowStock ? 1 : 0);
+    lowStock.length + lowCocoonRegions.length;
 
   // =====================================
   // OPEN EDITORS
@@ -581,16 +601,19 @@ export default function Inventory() {
     setEditor("stock");
   }
 
-  function editCocoons() {
-    setGoodChange(String(cocoons.good));
-    setMinorChange(String(cocoons.minor));
-    setUnusableChange(String(cocoons.unusable));
-    setCocoonImage(cocoons.imageUrl);
+  function addCocoonRegion() {
+    setEditedCocoonRegion(null);
+    setCocoonRegionName("");
+    setGoodChange("0");
+    setMinorChange("0");
+    setUnusableChange("0");
+    setCocoonImage("");
     setEditor("cocoons");
   }
 
-  function editReserved() {
-    setReservedText(String(cocoons.reserved));
+  function editReserved(region: CocoonRegion) {
+    setEditedCocoonRegion(region);
+    setReservedText(String(region.reserved));
     setEditor("reserved");
   }
 
@@ -687,7 +710,9 @@ export default function Inventory() {
   // =====================================
 
   function activityBatch(
-    batch: ReturnType<typeof writeBatch>,
+    batch: {
+      set(reference: DocumentReference, data: DocumentData): void;
+    },
     message: string,
     detail: string,
     type: string
@@ -805,8 +830,6 @@ export default function Inventory() {
             )
           );
 
-      const batch = writeBatch(db);
-
       const fields = {
         name: form.name.trim(),
         scientificName:
@@ -820,31 +843,41 @@ export default function Inventory() {
         updatedBy: user.uid,
       };
 
-      if (selectedId) {
-        batch.update(
-          reference,
-          fields
+      await runTransaction(db, async transaction => {
+        let previousQuantity = 0;
+
+        if (selectedId) {
+          const snapshot = await transaction.get(reference);
+
+          if (!snapshot.exists()) {
+            throw new Error("This species no longer exists.");
+          }
+
+          previousQuantity = asNumber(snapshot.data().quantity);
+          transaction.update(reference, fields);
+        } else {
+          transaction.set(reference, {
+            ...fields,
+            createdAt:
+              serverTimestamp(),
+          });
+        }
+
+        const added = quantity - previousQuantity;
+
+        activityBatch(
+          transaction,
+          selectedId
+            ? "Silkworm species updated"
+            : "Silkworm species added",
+          added > 0
+            ? `${fields.name} — Stock added: ${added} worms`
+            : fields.name,
+          selectedId
+            ? "edit"
+            : "add"
         );
-      } else {
-        batch.set(reference, {
-          ...fields,
-          createdAt:
-            serverTimestamp(),
-        });
-      }
-
-      activityBatch(
-        batch,
-        selectedId
-          ? "Silkworm species updated"
-          : "Silkworm species added",
-        form.name.trim(),
-        selectedId
-          ? "edit"
-          : "add"
-      );
-
-      await batch.commit();
+      });
 
       setEditor(null);
     } catch (reason) {
@@ -1028,114 +1061,92 @@ export default function Inventory() {
   }
 
   // =====================================
-  // UPDATE COCOON INVENTORY
+  // SAVE COCOON REGIONS
   // =====================================
 
-  async function saveCocoons() {
-    if (
-      !user ||
-      busy ||
-      ![
-        goodChange,
-        minorChange,
-        unusableChange,
-      ].every(positiveInteger)
-    ) {
-      notify(
-        "Invalid quantities",
-        "Enter non-negative whole-number totals for each cocoon quality."
-      );
+  async function saveCocoonRegion(
+    values: Partial<Cocoons>,
+    reservation: boolean
+  ) {
+    if (!user || busy || !cocoonRegionsReady) return;
 
+    const region = reservation ? editedCocoonRegion : null;
+    if (reservation && !region) return;
+
+    const name = (region?.name ?? cocoonRegionName).trim();
+    if (!name || name.length > 100) {
+      notify("Invalid region", "Enter a region name of up to 100 characters.");
+      return;
+    }
+    if (!region && name.toLowerCase() === "unassigned") {
+      notify("Invalid region", "Choose a name other than Unassigned.");
       return;
     }
 
+    const uid = user.uid;
     setSaving(true);
 
     try {
-      const reference = doc(
-        db,
-        "inventory",
-        "cocoons"
-      );
+      const regionId = region?.id ?? `region-${encodeURIComponent(name.toLowerCase())}`;
+      const reference = doc(db, "cocoon_regions", regionId);
+      const activityRef = doc(collection(db, "inventory_activity"));
 
-      await runTransaction(
-        db,
-        async transaction => {
-          const snapshot =
-            await transaction.get(reference);
+      await runTransaction(db, async transaction => {
+        const snapshot = await transaction.get(reference);
 
-          const data =
-            snapshot.data() ?? {};
-
-          const next = {
-            good: Number(goodChange),
-            minor: Number(minorChange),
-            unusable: Number(unusableChange),
-            reserved:
-              asNumber(data.reserved),
-            imageUrl: cocoonImage,
-          };
-
-          if (
-            [
-              next.good,
-              next.minor,
-              next.unusable,
-            ].some(
-              value =>
-                value < 0 ||
-                !Number.isSafeInteger(value)
-            )
-          ) {
-            throw new Error(
-              "Cocoon stock cannot be negative."
-            );
-          }
-
-          if (
-            next.reserved > next.good
-          ) {
-            throw new Error(
-              "Good-quality cocoons must cover reserved stock."
-            );
-          }
-
-          transaction.set(
-            reference,
-            {
-              ...next,
-              updatedAt:
-                serverTimestamp(),
-              updatedBy: user.uid,
-            }
-          );
-
-          transaction.set(
-            doc(
-              collection(
-                db,
-                "inventory_activity"
-              )
-            ),
-            {
-              message:
-                "Cocoon inventory edited",
-              detail:
-                `New totals — Good ${goodChange}, ` +
-                `Minor ${minorChange}, Unusable ${unusableChange}`,
-              type: "cocoon",
-              actorUid: user.uid,
-              createdAt:
-                serverTimestamp(),
-            }
-          );
+        if (auth.currentUser?.uid !== uid) {
+          throw new Error("Your session changed. Sign in again before saving.");
         }
-      );
+
+        if (!region && snapshot.exists()) {
+          throw new Error("This region already exists.");
+        }
+
+        const current = readCocoonStock(snapshot.data());
+        if (region && (
+          !snapshot.exists() ||
+          COCOON_STOCK_FIELDS.some(field => current[field] !== region[field]) ||
+          current.imageUrl !== region.imageUrl
+        )) {
+          throw new Error("This region changed. Reopen its editor and try again.");
+        }
+
+        const next = { ...current, ...values };
+        if (next.reserved > next.good) {
+          throw new Error("Reserved cocoons cannot exceed good-quality stock.");
+        }
+
+        if (COCOON_STOCK_FIELDS.some(field =>
+          !Number.isSafeInteger(next[field]) ||
+          next[field] < 0 ||
+          next[field] > 1000000000
+        )) {
+          throw new Error("Cocoon quantities are out of range.");
+        }
+
+        const metadata = {
+          updatedAt: serverTimestamp(),
+          updatedBy: uid,
+        };
+
+        transaction.set(reference, { ...next, name, ...metadata });
+        transaction.set(activityRef, {
+          message: reservation
+            ? "Cocoon reservation updated"
+            : "Cocoon region added",
+          detail: reservation
+            ? `${name} — ${next.reserved} cocoons reserved`
+            : `${name} — Good ${next.good}, Minor ${next.minor}, Unusable ${next.unusable}`,
+          type: "cocoon",
+          actorUid: uid,
+          createdAt: serverTimestamp(),
+        });
+      });
 
       setEditor(null);
     } catch (reason) {
       notify(
-        "Unable to update",
+        reservation ? "Unable to reserve" : "Unable to add region",
         formatError(reason)
       );
     } finally {
@@ -1143,104 +1154,38 @@ export default function Inventory() {
     }
   }
 
+  async function saveNewCocoonRegion() {
+    if (!user || busy) return;
+
+    if (![goodChange, minorChange, unusableChange].every(positiveInteger)) {
+      notify(
+        "Invalid quantities",
+        "Enter non-negative whole-number totals for each cocoon quality."
+      );
+      return;
+    }
+
+    await saveCocoonRegion({
+      good: Number(goodChange),
+      minor: Number(minorChange),
+      unusable: Number(unusableChange),
+      imageUrl: cocoonImage,
+    }, false);
+  }
+
   // =====================================
   // UPDATE RESERVED COCOONS
   // =====================================
 
   async function saveReserved() {
-    if (
-      !user ||
-      busy ||
-      !positiveInteger(reservedText)
-    ) {
-      notify(
-        "Invalid reservation",
-        "Enter a non-negative whole number."
-      );
+    if (!user || busy) return;
 
+    if (!positiveInteger(reservedText)) {
+      notify("Invalid reservation", "Enter a non-negative whole number.");
       return;
     }
 
-    setSaving(true);
-
-    try {
-      const reference = doc(
-        db,
-        "inventory",
-        "cocoons"
-      );
-
-      await runTransaction(
-        db,
-        async transaction => {
-          const snapshot =
-            await transaction.get(reference);
-
-          const record =
-            snapshot.data() ?? {};
-
-          const reserved =
-            Number(reservedText);
-
-          if (
-            reserved >
-            asNumber(record.good)
-          ) {
-            throw new Error(
-              "Reserved cocoons cannot exceed good-quality stock."
-            );
-          }
-
-          transaction.set(
-            reference,
-            {
-              good:
-                asNumber(record.good),
-              minor:
-                asNumber(record.minor),
-              unusable:
-                asNumber(record.unusable),
-              imageUrl:
-                String(
-                  record.imageUrl ?? ""
-                ),
-              reserved,
-              updatedAt:
-                serverTimestamp(),
-              updatedBy: user.uid,
-            }
-          );
-
-          transaction.set(
-            doc(
-              collection(
-                db,
-                "inventory_activity"
-              )
-            ),
-            {
-              message:
-                "Cocoon reservation updated",
-              detail:
-                `${reserved} cocoons reserved`,
-              type: "cocoon",
-              actorUid: user.uid,
-              createdAt:
-                serverTimestamp(),
-            }
-          );
-        }
-      );
-
-      setEditor(null);
-    } catch (reason) {
-      notify(
-        "Unable to reserve",
-        formatError(reason)
-      );
-    } finally {
-      setSaving(false);
-    }
+    await saveCocoonRegion({ reserved: Number(reservedText) }, true);
   }
 
   // =====================================
@@ -1336,8 +1281,8 @@ export default function Inventory() {
 
             <Stat
               icon="ellipse-outline"
-              label="Available Cocoons"
-              value={fmt(availableCocoons)}
+              label="Cocoon Regions"
+              value={cocoonRegionsReady ? fmt(cocoonRegions.length) : "—"}
             />
 
             <Stat
@@ -1556,135 +1501,97 @@ export default function Inventory() {
                 Cocoon Inventory
               </Text>
 
-              <Text
-                style={[
-                  S.muted,
-                  {
-                    marginTop: 5,
-                    marginBottom: 14,
-                  },
-                ]}
-              >
-                Track production, quality distribution,
-                and reserved stock.
-              </Text>
+              <View style={styles.cocoonButtons}>
+                {!!cocoonRegionsError && (
+                  <Text style={styles.errorText}>{cocoonRegionsError}</Text>
+                )}
 
-              {!!cocoons.imageUrl && (
-                <Image
-                  source={{
-                    uri: cocoons.imageUrl,
-                  }}
-                  style={styles.cocoonImage}
-                />
-              )}
+                {!cocoonRegionsReady && !cocoonRegionsError && user && (
+                  <ActivityIndicator color={C.green} />
+                )}
 
-              {cocoonLowStock && (
-                <View
-                  style={
-                    styles.cocoonStockWarning
-                  }
-                >
-                  <Ionicons
-                    name="warning-outline"
-                    color="#A35D14"
-                    size={18}
-                  />
+                {cocoonRegionsReady && (
+                  <View style={styles.cocoonRegionCard}>
+                    <Text style={S.strong}>All Regions</Text>
 
-                  <Text
-                    style={
-                      styles.cocoonStockWarningText
-                    }
-                  >
-                    Low cocoon stock:{" "}
-                    {fmt(availableCocoons)} good-quality
-                    cocoons available (limit{" "}
-                    {COCOON_LOW_STOCK_THRESHOLD}).
-                  </Text>
-                </View>
-              )}
+                    <View style={styles.metrics}>
+                      {([
+                        ["Good Quality", cocoonTotals.good],
+                        ["Minor Defects", cocoonTotals.minor],
+                        ["Reject", cocoonTotals.unusable],
+                        ["Reserved", cocoonTotals.reserved],
+                        ["Available Good Quality", cocoonTotals.good - cocoonTotals.reserved],
+                      ] as const).map(([label, value]) => (
+                        <View key={label} style={styles.metric}>
+                          <Text style={S.muted}>{label}</Text>
+                          <Text style={styles.metricValue}>{fmt(value)}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
 
-              <View style={styles.metrics}>
-                {[
-                  ["Total Cocoons", totalCocoons],
-                  ["Good Quality", cocoons.good],
-                  ["Minor Defects", cocoons.minor],
-                  ["Not Usable", cocoons.unusable],
-                  ["Reserved", cocoons.reserved],
-                  [
-                    "Available Good",
-                    availableCocoons,
-                  ],
-                ].map(([label, value]) => (
-                  <View
-                    key={String(label)}
-                    style={styles.metric}
-                  >
-                    <Text style={S.muted}>
-                      {label}
-                    </Text>
-
-                    <Text
-                      style={styles.metricValue}
+                {cocoonRegions.map(region => (
+                  <View key={region.id} style={styles.speciesCard}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`View cocoon counts for ${region.name}`}
+                      onPress={() => setSelectedCocoonRegionId(region.id)}
+                      disabled={!cocoonRegionsReady}
+                      style={styles.speciesTop}
                     >
-                      {fmt(Number(value))}
-                    </Text>
+                      {region.imageUrl ? (
+                        <Image
+                          source={{ uri: region.imageUrl }}
+                          style={styles.thumbnail}
+                        />
+                      ) : (
+                        <View style={styles.thumbnailEmpty}>
+                          <Ionicons
+                            name="ellipse-outline"
+                            size={22}
+                            color={C.green}
+                          />
+                        </View>
+                      )}
+
+                      <View style={{ flex: 1 }}>
+                        <Text style={S.strong}>{region.name}</Text>
+                        <Text style={S.muted}>
+                          {fmt(region.good + region.minor + region.unusable)} total
+                          {" · "}{fmt(region.good - region.reserved)} available
+                        </Text>
+                      </View>
+
+                      <Ionicons
+                        name="chevron-forward"
+                        size={18}
+                        color={C.green}
+                      />
+                    </Pressable>
+
+                    <View style={styles.actionRow}>
+                      <Pressable
+                        onPress={() => editReserved(region)}
+                        style={styles.outlineButton}
+                        disabled={busy || !cocoonRegionsReady}
+                      >
+                        <Text style={styles.outlineLabel}>Manage Reserved</Text>
+                      </Pressable>
+                    </View>
                   </View>
                 ))}
-              </View>
 
-              <Text
-                style={[
-                  S.strong,
-                  { marginTop: 8 },
-                ]}
-              >
-                Good-quality cocoons:{" "}
-                {qualityPercent}%
-              </Text>
+                {cocoonRegionsReady && cocoonRegions.length === 0 && (
+                  <Text style={S.muted}>No cocoon regions yet.</Text>
+                )}
 
-              <View
-                style={styles.progressTrack}
-              >
-                <View
-                  style={[
-                    styles.progressFill,
-                    {
-                      width:
-                        `${qualityPercent}%`,
-                    },
-                  ]}
-                />
-              </View>
-
-              <View
-                style={styles.cocoonButtons}
-              >
                 <Pressable
-                  onPress={editCocoons}
+                  onPress={addCocoonRegion}
                   style={styles.fullButton}
-                  disabled={busy}
+                  disabled={busy || !cocoonRegionsReady || !user}
                 >
-                  <Text
-                    style={
-                      styles.fullButtonText
-                    }
-                  >
-                    Edit Cocoon Quantities
-                  </Text>
-                </Pressable>
-
-                <Pressable
-                  onPress={editReserved}
-                  style={styles.outlineButton}
-                  disabled={busy}
-                >
-                  <Text
-                    style={
-                      styles.outlineLabel
-                    }
-                  >
-                    Manage Reserved
-                  </Text>
+                  <Text style={styles.fullButtonText}>Add Region</Text>
                 </Pressable>
               </View>
             </View>
@@ -1698,20 +1605,20 @@ export default function Inventory() {
                 Needs Attention
               </Text>
 
-              {cocoonLowStock && (
+              {lowCocoonRegions.map(region => (
                 <Text
+                  key={region.id}
                   style={[
                     S.muted,
                     { marginTop: 9 },
                   ]}
                 >
-                  Available good-quality cocoons:{" "}
-                  {fmt(availableCocoons)} left
+                  {region.name}:{" "}
+                  {fmt(region.good - region.reserved)} good-quality cocoons available
                   {" "}
-                  (threshold{" "}
-                  {fmt(COCOON_LOW_STOCK_THRESHOLD)})
+                  (threshold {fmt(COCOON_LOW_STOCK_THRESHOLD)})
                 </Text>
-              )}
+              ))}
 
               {lowStock.map(item => (
                 <Text
@@ -1832,6 +1739,81 @@ export default function Inventory() {
         </View>
       </Modal>
 
+      {/* COCOON REGION DETAILS MODAL */}
+
+      <Modal
+        visible={selectedCocoonRegionId !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedCocoonRegionId(null)}
+      >
+        <View style={styles.backdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHead}>
+              <Text style={[S.sectionTitle, { flex: 1 }]}>
+                {selectedCocoonRegion?.name ?? "Cocoon Region"}
+              </Text>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close region details"
+                onPress={() => setSelectedCocoonRegionId(null)}
+              >
+                <Ionicons name="close" size={23} color={C.dark} />
+              </Pressable>
+            </View>
+
+            <ScrollView>
+              {selectedCocoonRegion && cocoonRegionsReady ? (
+                <>
+                  <View style={styles.metrics}>
+                    <View style={styles.metric}>
+                      <Text style={S.muted}>Good Quality</Text>
+                      <Text style={styles.metricValue}>
+                        {fmt(selectedCocoonRegion.good)}
+                      </Text>
+                    </View>
+
+                    <View style={styles.metric}>
+                      <Text style={S.muted}>Minor Defects</Text>
+                      <Text style={styles.metricValue}>
+                        {fmt(selectedCocoonRegion.minor)}
+                      </Text>
+                    </View>
+
+                    <View style={styles.metric}>
+                      <Text style={S.muted}>Reject</Text>
+                      <Text style={styles.metricValue}>
+                        {fmt(selectedCocoonRegion.unusable)}
+                      </Text>
+                    </View>
+
+                    <View style={styles.metric}>
+                      <Text style={S.muted}>Reserved</Text>
+                      <Text style={styles.metricValue}>
+                        {fmt(selectedCocoonRegion.reserved)}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.cocoonButtons}>
+                    <Text style={S.strong}>Available Good Quality</Text>
+                    <Text style={styles.metricValue}>
+                      {fmt(selectedCocoonRegion.good - selectedCocoonRegion.reserved)}
+                    </Text>
+                    <Text style={S.muted}>Good Quality − Reserved</Text>
+                  </View>
+                </>
+              ) : (
+                <Text style={S.muted}>
+                  {cocoonRegionsError || "This region is no longer available."}
+                </Text>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       {/* INVENTORY EDITOR MODAL */}
 
       <Modal
@@ -1853,8 +1835,8 @@ export default function Inventory() {
                   : editor === "stock"
                     ? "Adjust Silkworm Stock"
                     : editor === "cocoons"
-                      ? "Update Cocoons"
-                      : "Manage Reserved"}
+                      ? "Add Cocoon Region"
+                      : `Manage Reserved — ${editedCocoonRegion?.name ?? ""}`}
               </Text>
 
               <Pressable
@@ -2028,21 +2010,15 @@ export default function Inventory() {
 
               {editor === "cocoons" && (
                 <>
-                  <Text
-                    style={[
-                      S.muted,
-                      {
-                        marginBottom: 12,
-                      },
-                    ]}
-                  >
-                    Edit the current total for each
-                    cocoon quality category. Enter
-                    the actual quantity available.
-                  </Text>
+                  <Field
+                    label="Region Name"
+                    value={cocoonRegionName}
+                    onChangeText={setCocoonRegionName}
+                    placeholder="Enter a region name"
+                  />
 
                   <Field
-                    label="Good Quality — New Total"
+                    label="Good Quality"
                     value={goodChange}
                     onChangeText={
                       setGoodChange
@@ -2051,7 +2027,7 @@ export default function Inventory() {
                   />
 
                   <Field
-                    label="Minor Defects — New Total"
+                    label="Minor Defects"
                     value={minorChange}
                     onChangeText={
                       setMinorChange
@@ -2060,7 +2036,7 @@ export default function Inventory() {
                   />
 
                   <Field
-                    label="Not Usable — New Total"
+                    label="Reject"
                     value={
                       unusableChange
                     }
@@ -2134,10 +2110,10 @@ export default function Inventory() {
                     ]}
                   >
                     Good-quality:{" "}
-                    {fmt(cocoons.good)}
+                    {fmt(editedCocoonRegion?.good ?? 0)}
                     {" · "}
                     Current reserved:{" "}
-                    {fmt(cocoons.reserved)}
+                    {fmt(editedCocoonRegion?.reserved ?? 0)}
                   </Text>
 
                   <Field
@@ -2197,7 +2173,7 @@ export default function Inventory() {
                     } else if (
                       editor === "cocoons"
                     ) {
-                      void saveCocoons();
+                      void saveNewCocoonRegion();
                     } else if (
                       editor === "reserved"
                     ) {
@@ -2559,42 +2535,17 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
 
-  progressTrack: {
-    backgroundColor: C.soft,
-    borderRadius: 8,
-    overflow: "hidden",
-    height: 10,
-    marginTop: 10,
-  },
-
-  progressFill: {
-    backgroundColor: C.green,
-    height: 10,
-    borderRadius: 8,
-  },
-
   cocoonButtons: {
     marginTop: 16,
     gap: 9,
   },
 
-  cocoonStockWarning: {
-    flexDirection: "row",
-    gap: 9,
-    alignItems: "center",
-    backgroundColor: "#FFF4DC",
-    borderColor: "#ECD5A5",
+  cocoonRegionCard: {
     borderWidth: 1,
-    borderRadius: 11,
+    borderColor: C.line,
+    borderRadius: 12,
     padding: 12,
-    marginBottom: 14,
-  },
-
-  cocoonStockWarningText: {
-    flex: 1,
-    color: "#805416",
-    fontSize: 12,
-    lineHeight: 18,
+    gap: 8,
   },
 
   fullButton: {
@@ -2610,13 +2561,6 @@ const styles = StyleSheet.create({
     color: "white",
     fontSize: 12,
     fontWeight: "700",
-  },
-
-  cocoonImage: {
-    width: "100%",
-    height: 145,
-    borderRadius: 12,
-    marginBottom: 14,
   },
 
   // ACTIVITY ROW WITH RIGHT-SIDE DELETE ICON

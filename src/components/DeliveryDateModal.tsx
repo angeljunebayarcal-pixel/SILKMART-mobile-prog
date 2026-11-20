@@ -281,8 +281,7 @@ export default function DeliveryDateModal({
               <Text style={styles.help}>
                 Select a date to confirm or
                 reschedule the customer's
-                delivery. Payment is Cash
-                on Delivery (COD).
+                delivery.
               </Text>
             </View>
 
